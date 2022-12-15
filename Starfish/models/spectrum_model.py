@@ -7,6 +7,8 @@ import numpy as np
 from scipy.linalg import cho_factor, cho_solve
 from scipy.optimize import minimize
 import toml
+import torch
+from Starfish.param_dict import GroupedParamDict
 
 from Starfish import Spectrum
 from Starfish.emulator import Emulator
@@ -148,9 +150,10 @@ class SpectrumModel:
         self.data = data[0]
 
         dv = calculate_dv(self.data.wave)
-        self.min_dv_wave = create_log_lam_grid(
+        self.min_dv_wave = torch.tensor(create_log_lam_grid(
             dv, self.emulator.wl.min(), self.emulator.wl.max()
-        )["wl"]
+        )["wl"], dtype = float)
+
         self.bulk_fluxes = resample(
             self.emulator.wl, self.emulator.bulk_fluxes, self.min_dv_wave
         )
@@ -163,7 +166,7 @@ class SpectrumModel:
             cheb_idxs = [str(i) for i in range(1, len(chebs) + 1)]
             params["cheb"] = dict(zip(cheb_idxs, chebs))
         # load rest of params into FlatterDict
-        self.params = FlatterDict(params)
+        self.params = GroupedParamDict(params)
         self.frozen = []
         self.name = name
         self.norm = norm
@@ -190,13 +193,12 @@ class SpectrumModel:
         values = []
         for key in self.emulator.param_names:
             values.append(self.params[key])
-        return np.array(values)
+        return torch.cat(values)
 
     @grid_params.setter
     def grid_params(self, values):
         for key, value in zip(self.emulator.param_names, values):
-            if key not in self.frozen:
-                self.params[key] = value
+            self.params[key] = value
 
     @property
     def cheb(self):
@@ -293,12 +295,12 @@ class SpectrumModel:
         if "vz" in self.params:
             wave = doppler_shift(wave, self.params["vz"])
 
-        fluxes = resample(wave, fluxes, self.data.wave)
+        fluxes = resample(wave, fluxes, torch.tensor(self.data.wave))
 
         if "Av" in self.params:
-            fluxes = extinct(self.data.wave, fluxes, self.params["Av"])
+            fluxes = extinct(torch.tensor(self.data.wave), fluxes, self.params["Av"])
 
-        if "cheb" in self.params:
+        if "cheb" in self.params: #TODO: add chebyshev support in pytorch
             # force constant term to be 1 to avoid degeneracy with log_scale
             coeffs = [1, *self.cheb]
             fluxes = chebyshev_correct(self.data.wave, fluxes, coeffs)
@@ -306,43 +308,47 @@ class SpectrumModel:
         weights, weights_cov = self.emulator(self.grid_params)
 
         # Decompose the bulk_fluxes (see emulator/emulator.py for the ordering)
-        *eigenspectra, flux_mean, flux_std = fluxes
+        flux_mean = fluxes[-2]
+        flux_std = fluxes[-1]
+        eigenspectra = fluxes[:-2]
 
         # Complete the reconstruction
+        
         X = eigenspectra * flux_std
         flux = weights @ X + flux_mean
 
         # optionally scale using absolute flux calibration
-        if self.norm:
+        if self.norm: #TODO: Need to implement in pytorch
             norm = self.emulator.norm_factor(self.grid_params)
         else:
             norm = 1
 
         # Renorm to data flux if no "log_scale" provided
         if "log_scale" not in self.params:
-            scale = _get_renorm_factor(self.data.wave, flux * norm, self.data.flux)
-            self._log_scale = np.log(scale)
+            scale = _get_renorm_factor(torch.tensor(self.data.wave), flux * norm, torch.tensor(self.data.flux))
+            self._log_scale = torch.log(scale)
             scale *= norm
             self.log.debug(f"fit scale factor using integrated flux ratio: {scale}")
         else:
             self._log_scale = self.params["log_scale"]
-            scale = np.exp(self.params["log_scale"]) * norm
+            scale = torch.exp(self.params["log_scale"]) * norm
 
         flux = rescale(flux, scale)
         X = rescale(X, scale)
 
-        L, flag = cho_factor(weights_cov, overwrite_a=True)
-        cov = X.T @ cho_solve((L, flag), X)
+        L = torch.linalg.cholesky(weights_cov)
+        cov = X.T @ torch.cholesky_solve(X, L)
 
         # Trivial covariance
-        np.fill_diagonal(cov, cov.diagonal() + self.data.sigma**2)
+        new_diag = cov.diagonal() + self.data.sigma**2
+        cov.diagonal().copy_(new_diag)
 
         # Global covariance
         if "global_cov" in self.params:
             if "global_cov" not in self.frozen or self._glob_cov is None:
-                ag = np.exp(self.params["global_cov:log_amp"])
-                lg = np.exp(self.params["global_cov:log_ls"])
-                self._glob_cov = global_covariance_matrix(self.data.wave, ag, lg)
+                ag = torch.exp(torch.tensor(self.params["global_cov:log_amp"], dtype=torch.float64))
+                lg = torch.exp(torch.tensor(self.params["global_cov:log_ls"], dtype=torch.float64))
+                self._glob_cov = global_covariance_matrix(torch.tensor(self.data.wave), ag, lg)
 
         if self._glob_cov is not None:
             cov += self._glob_cov
@@ -351,10 +357,10 @@ class SpectrumModel:
         if "local_cov" in self.params:
             if "local_cov" not in self.frozen or self._loc_cov is None:
                 self._loc_cov = 0
-                for kernel in self.params.as_dict()["local_cov"]:
+                for kernel in self.params.as_dict()["local_cov"]: # TODO: Could vecotrize this loop for speed up by rearranging kernel order
                     mu = kernel["mu"]
-                    amplitude = np.exp(kernel["log_amp"])
-                    sigma = np.exp(kernel["log_sigma"])
+                    amplitude = torch.exp(kernel["log_amp"])
+                    sigma = torch.exp(kernel["log_sigma"])
                     self._loc_cov += local_covariance_matrix(
                         self.data.wave, amplitude, mu, sigma
                     )
@@ -671,7 +677,7 @@ class SpectrumModel:
         for key, val in priors.items():
             # Key exists
             if key not in self.params and not key.startswith("cheb"):
-                raise ValueError(f"Invalid priors. {key} not a vlid key.")
+                raise ValueError(f"Invalid priors. {key} not a valid key.")
             # has logpdf method
             if not callable(getattr(val, "logpdf", None)):
                 raise ValueError(
@@ -752,7 +758,7 @@ class SpectrumModel:
         ax.legend()
 
         # Residuals plot
-        R = self.data.flux - model_flux
+        R = self.data.flux - model_flux.numpy()
         std = np.sqrt(model_cov.diagonal())
         resid_params = {"lw": 0.3}
         resid_params.update(resid_kwargs)

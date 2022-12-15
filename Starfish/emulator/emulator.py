@@ -7,15 +7,15 @@ import h5py
 import numpy as np
 from nptyping import NDArray
 from scipy.interpolate import LinearNDInterpolator
-from scipy.linalg import cho_factor, cho_solve
-from scipy.optimize import minimize
 from sklearn.decomposition import PCA
 
 from Starfish.grid_tools import HDF5Interface
 from Starfish.grid_tools.utils import determine_chunk_log
 from Starfish.utils import calculate_dv
+from Starfish.param_dict import GroupedParamDict
 from .kernels import batch_kernel
 from ._utils import get_phi_squared, get_w_hat
+import torch
 
 log = logging.getLogger(__name__)
 
@@ -83,14 +83,14 @@ class Emulator:
         name: Optional[str] = None,
     ):
         self.log = logging.getLogger(self.__class__.__name__)
-        self.grid_points = grid_points
+        self.grid_points = torch.DoubleTensor(grid_points)
         self.param_names = param_names
-        self.wl = wavelength
-        self.weights = weights
-        self.eigenspectra = eigenspectra
-        self.flux_mean = flux_mean
-        self.flux_std = flux_std
-        self.factors = factors
+        self.wl = torch.DoubleTensor(wavelength)
+        self.weights = torch.DoubleTensor(weights)
+        self.eigenspectra = torch.DoubleTensor(eigenspectra)
+        self.flux_mean = torch.DoubleTensor(flux_mean)
+        self.flux_std = torch.DoubleTensor(flux_std)
+        self.factors = torch.DoubleTensor(factors)
         self.factor_interpolator = LinearNDInterpolator(
             grid_points, factors, rescale=True
         )
@@ -98,12 +98,12 @@ class Emulator:
         self.dv = calculate_dv(wavelength)
         self.ncomps = eigenspectra.shape[0]
 
-        self.hyperparams = {}
+        self.hyperparams = GroupedParamDict(groupTensors=[False, True], max_depth=1)
         self.name = name
 
         self.lambda_xi = lambda_xi
 
-        self.variances = (
+        self.variances = torch.DoubleTensor(
             variances if variances is not None else 1e4 * np.ones(self.ncomps)
         )
 
@@ -113,20 +113,20 @@ class Emulator:
         if lengthscales is None:
             lengthscales = np.tile(3 * self._grid_sep, (self.ncomps, 1))
 
-        self.lengthscales = lengthscales
+        self.lengthscales = torch.DoubleTensor(lengthscales)
 
         # Determine the minimum and maximum bounds of the grid
         self.min_params = grid_points.min(axis=0)
         self.max_params = grid_points.max(axis=0)
 
         # TODO find better variable names for the following
-        self.iPhiPhi = np.linalg.inv(
+        self.iPhiPhi = torch.DoubleTensor(torch.linalg.inv(
             get_phi_squared(self.eigenspectra, self.grid_points.shape[0])
-        )
+        ))
         self.v11 = self.iPhiPhi / self.lambda_xi + batch_kernel(
             self.grid_points, self.grid_points, self.variances, self.lengthscales
         )
-        self.w_hat = w_hat
+        self.w_hat = torch.DoubleTensor(w_hat)
 
         self._trained = False
 
@@ -137,7 +137,7 @@ class Emulator:
 
         :setter: Sets the value.
         """
-        return np.exp(self.hyperparams["log_lambda_xi"])
+        return torch.exp(self.hyperparams["log_lambda_xi"])
 
     @lambda_xi.setter
     def lambda_xi(self, value: float):
@@ -150,12 +150,7 @@ class Emulator:
 
         :setter: Sets the variances given an array.
         """
-        values = [
-            val
-            for key, val in self.hyperparams.items()
-            if key.startswith("log_variance:")
-        ]
-        return np.exp(values)
+        return torch.exp(self.hyperparams['log_variance'].values()[0])
 
     @variances.setter
     def variances(self, values: NDArray[float]):
@@ -169,12 +164,7 @@ class Emulator:
 
         :setter: Sets the lengthscales given a 2d array
         """
-        values = [
-            val
-            for key, val in self.hyperparams.items()
-            if key.startswith("log_lengthscale:")
-        ]
-        return np.exp(values).reshape(self.ncomps, -1)
+        return torch.exp(self.hyperparams['log_lengthscale'].values()[0]).reshape(self.ncomps, -1)
 
     @lengthscales.setter
     def lengthscales(self, values: NDArray[float]):
@@ -310,9 +300,9 @@ class Emulator:
         exp_var = pca.explained_variance_ratio_.sum()
         # This is basically the mean square error of the reconstruction
         log.info(
-            f"PCA fit {exp_var:.2f}% of the variance with {pca.n_components_:d} components."
+            f"PCA fit {exp_var * 100:.2f}% of the variance with {pca.n_components_:d} components."
         )
-        w_hat = get_w_hat(eigenspectra, fluxes)
+        w_hat = get_w_hat(torch.DoubleTensor(eigenspectra), torch.DoubleTensor(fluxes))
 
         emulator = cls(
             grid_points=grid.grid_points,
@@ -375,7 +365,7 @@ class Emulator:
 
         # If the pars is outside of the range of emulator values, raise a ModelError
         if np.any(params < self.min_params) or np.any(params > self.max_params):
-            raise ValueError("Querying emulator outside of original parameter range.")
+            raise ValueError("Querying emulator outside of original parameter range.", params)
 
         # Do this according to R&W eqn 2.18, 2.19
         # Recalculate V12, V21, and V22.
@@ -384,10 +374,10 @@ class Emulator:
         v21 = v12.T
 
         # Recalculate the covariance
-        mu = v21 @ np.linalg.solve(self.v11, self.w_hat)
-        cov = v22 - v21 @ np.linalg.solve(self.v11, v12)
+        mu = v21 @ torch.linalg.solve(self.v11, self.w_hat)
+        cov = v22 - v21 @ torch.linalg.solve(self.v11, v12)
         if not full_cov:
-            cov = np.diag(cov)
+            cov = torch.diag(cov)
         if reinterpret_batch:
             mu = mu.reshape(-1, self.ncomps, order="F").squeeze()
             cov = cov.reshape(-1, self.ncomps, order="F").squeeze()
@@ -496,32 +486,74 @@ class Emulator:
         scipy.optimize.minimize
 
         """
-        # Define our loss function
-        def nll(P):
-            if np.any(~np.isfinite(P)):
-                return np.inf
-            self.set_param_vector(P)
-            if np.any(self.lengthscales < 2 * self._grid_sep):
-                return np.inf
-            loss = -self.log_likelihood()
-            self.log.debug(f"loss: {loss}")
-            return loss
 
         # Do the optimization
-        P0 = self.get_param_vector()
+        # Enable autograd for parameters
+        self.hyperparams.requires_grad_(True)
+        # Keep track of parameters
+        params = self.hyperparams.params()
 
-        default_kwargs = {"method": "Nelder-Mead", "options": {"maxiter": 10000}}
+        variance_params = self.hyperparams['log_variance'].values()[0]
+        lengthscale_params = self.hyperparams['log_lengthscale'].values()[0]
+        
+
+        default_kwargs = {"maxiter": 10000, "log_interval": 100, 'best_eps': 1e-5, 'lr': 0.001, 'momentum': 0.9}
         default_kwargs.update(opt_kwargs)
-        soln = minimize(nll, P0, **default_kwargs)
 
-        if not soln.success:
-            self.log.warning("Optimization did not succeed.")
-            self.log.info(soln.message)
-        else:
-            self.set_param_vector(soln.x)
-            self._trained = True
-            self.log.info("Finished optimizing emulator hyperparameters")
-            self.log.info(self)
+        optimizer = torch.optim.SGD(params, lr = default_kwargs['lr'], momentum = default_kwargs['momentum'])
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+
+        # best_params = {k: v.detach() for k, v in self.hyperparams.items()}
+        early_stopping = 20
+        best_loss = None
+        best_step = 0
+
+        for step in range(default_kwargs['maxiter']):
+            optimizer.zero_grad()
+
+            variances = torch.exp(variance_params)
+            lengthscales = torch.exp(lengthscale_params).reshape(self.ncomps, -1)
+            lambda_xi = torch.exp(self.hyperparams['log_lambda_xi'])
+            
+            self.v11 = self.iPhiPhi / lambda_xi + batch_kernel(
+                self.grid_points, self.grid_points, variances, lengthscales
+            )
+            loss = -self.log_likelihood()
+            
+            if best_loss is None or best_loss - loss > default_kwargs['best_eps'] :
+                best_loss = loss
+                best_step = step
+                # best_params = {k: v.detach() for k, v in self.hyperparams.items()}
+
+            if step % default_kwargs["log_interval"] == 0:
+                self.log.info(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+            else:
+                self.log.debug(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+
+            if step - best_step > early_stopping:
+                self.log.info(f"Early stopping as step: {step} loss: {loss} (best loss: {best_loss} @ step: {best_step})")
+                break
+            loss.backward()
+            optimizer.step()
+            scheduler.step(loss)
+        
+        self.log.info("Finished optimizing emulator hyperparameters")
+        self.hyperparams.requires_grad_(False)
+        self._trained = True
+        self.log.info(self)
+        # self.hyperparams._values = best_params.detach()
+        # for k, v in best_params.items():
+        #     self.hyperparams[k] = v
+        # variances = torch.exp(variance_params).detach()
+        # lengthscales = torch.exp(lengthscale_params).reshape(self.ncomps, -1).detach()
+        variance_params = self.hyperparams['log_variance'].values()[0]
+        lengthscale_params = self.hyperparams['log_lengthscale'].values()[0]
+        variances = torch.exp(variance_params)
+        lengthscales = torch.exp(lengthscale_params).reshape(self.ncomps, -1)
+        # Recalculate v11 and detach
+        self.v11 = self.iPhiPhi / self.lambda_xi + batch_kernel(
+            self.grid_points, self.grid_points, variances, lengthscales
+        ).detach()
 
     def get_index(self, params: Sequence[float]) -> int:
         """
@@ -578,8 +610,7 @@ class Emulator:
         -------
         numpy.ndarray
         """
-        values = list(self.get_param_dict().values())
-        return np.array(values)
+        return self.get_param_dict().values()
 
     def set_param_vector(self, params: NDArray[float]):
         """
@@ -613,9 +644,9 @@ class Emulator:
         scipy.linalg.LinAlgError
             If the Cholesky factorization fails
         """
-        L, flag = cho_factor(self.v11)
-        logdet = 2 * np.sum(np.log(np.diag(L)))
-        sqmah = self.w_hat @ cho_solve((L, flag), self.w_hat)
+        L = torch.linalg.cholesky(self.v11)
+        logdet = 2 * torch.sum(torch.log(torch.diag(L)))
+        sqmah = self.w_hat @ torch.cholesky_solve(self.w_hat.reshape((-1, 1)), L)
         return -(logdet + sqmah) / 2
 
     def __repr__(self):
@@ -624,7 +655,7 @@ class Emulator:
         if self.name is not None:
             output += f"Name: {self.name}\n"
         output += f"Trained: {self._trained}\n"
-        output += f"lambda_xi: {self.lambda_xi:.3f}\n"
+        output += f"lambda_xi: {self.lambda_xi.item():.2f}\n"
         output += "Variances:\n"
         output += "\n".join([f"\t{v:.2f}" for v in self.variances])
         output += "\nLengthscales:\n"
@@ -634,5 +665,5 @@ class Emulator:
                 for ls in self.lengthscales
             ]
         )
-        output += f"\nLog Likelihood: {self.log_likelihood():.2f}\n"
+        output += f"\nLog Likelihood: {self.log_likelihood().item():.2f}\n"
         return output

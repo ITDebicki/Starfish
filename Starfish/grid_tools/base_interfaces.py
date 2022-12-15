@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 from astropy.io import fits
 import tqdm
+import torch
 
 import Starfish.constants as C
 from Starfish.transforms import instrumental_broaden, resample
@@ -377,7 +378,7 @@ class HDF5Creator:
         else:
 
             def inst_broaden(w, f):
-                return (w, instrumental_broaden(w, f, self.instrument.FWHM))
+                return (w, instrumental_broaden(torch.DoubleTensor(w), torch.DoubleTensor(f), self.instrument.FWHM).numpy())
 
             # The final wavelength grid, onto which we will interpolate the
             # Fourier filtered wavelengths, is part of the instrument object
@@ -387,10 +388,10 @@ class HDF5Creator:
             self.dv_final = calculate_dv_dict(wl_dict)
 
         def resample_loglam(w, f):
-            return (wl_loglam, resample(w, f, wl_loglam))
+            return (wl_loglam, resample(torch.DoubleTensor(w.astype(np.float64)), torch.DoubleTensor(f.astype(np.float64)), torch.DoubleTensor(wl_loglam.astype(np.float64))).numpy())
 
         def resample_final(w, f):
-            return (self.wl_final, resample(w, f, self.wl_final))
+            return (self.wl_final, resample(torch.DoubleTensor(w.astype(np.float64)), torch.DoubleTensor(f.astype(np.float64)), torch.DoubleTensor(self.wl_final.astype(np.float64))).numpy())
 
         self.transform = lambda flux: resample_final(
             *inst_broaden(*resample_loglam(self.wl_native, flux))

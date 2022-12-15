@@ -1,6 +1,7 @@
 import logging
 
 import numpy as np
+import torch
 import scipy.linalg as sl
 from scipy.special import loggamma
 
@@ -15,14 +16,14 @@ def get_w_hat(eigenspectra, fluxes):
     """
     m = len(eigenspectra)
     M = len(fluxes)
-    out = np.empty((M * m,))
+    out = torch.empty((M * m,))
     for i in range(m):
         for j in range(M):
             out[i * M + j] = eigenspectra[i].T @ fluxes[j]
 
     phi_squared = get_phi_squared(eigenspectra, M)
-    fac = sl.cho_factor(phi_squared, check_finite=False, overwrite_a=True)
-    return sl.cho_solve(fac, out, check_finite=False)
+    fac = torch.linalg.cholesky_ex(phi_squared)
+    return torch.cholesky_solve(out, fac)
 
 
 def get_phi_squared(eigenspectra, M):
@@ -32,10 +33,10 @@ def get_phi_squared(eigenspectra, M):
     eigenspectra is a list of 1D numpy arrays.
     """
     m = len(eigenspectra)
-    out = np.zeros((m * M, m * M))
+    out = torch.zeros((m * M, m * M), dtype=torch.float64)
 
     # Compute all of the dot products pairwise, beforehand
-    dots = np.empty((m, m))
+    dots = torch.empty((m, m))
     for i in range(m):
         for j in range(m):
             dots[i, j] = eigenspectra[i].T @ eigenspectra[j]
@@ -67,9 +68,9 @@ def get_altered_prior_factors(eigenspectra, fluxes):
     M, npix = fluxes.shape
     m = len(eigenspectra)
 
-    Phi_w_hat = np.empty((M * npix, 1))
+    Phi_w_hat = torch.empty((M * npix, 1))
     for i in range(M):
-        loss_per_M = np.zeros(npix)
+        loss_per_M = torch.zeros(npix)
         for j in range(m):
             loss_per_M += eigenspectra[j] * w_hat[i + j * M]
         indices = slice(i * npix, (i + 1) * npix)

@@ -1,9 +1,13 @@
 from typing import Sequence
+import torch
+from collections.abc import MutableMapping, Mapping
 
 import numpy as np
 
 import Starfish.constants as C
 
+import logging 
+log = logging.getLogger(__name__)
 
 def calculate_dv(wave: Sequence):
     """
@@ -19,7 +23,8 @@ def calculate_dv(wave: Sequence):
     float
         delta-v in units of km/s
     """
-    return C.c_kms * np.min(np.diff(wave) / wave[:-1])
+    wave = torch.tensor(wave)
+    return C.c_kms * torch.min(torch.diff(wave) / wave[:-1])
 
 
 def calculate_dv_dict(wave_dict):

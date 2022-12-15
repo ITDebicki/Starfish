@@ -6,19 +6,41 @@ from scipy.special import j1
 
 from Starfish.constants import c_kms
 from Starfish.utils import calculate_dv
+from . import extinction_t
+import torch
 
 
-def resample(wave, flux, new_wave):
+
+def h_poly(t):
+    # Just store the inverse matrix (output of:)
+    # torch.inverse(torch.tensor(
+    #     [[1, 0, 0, 0],
+    #     [1, 1, 1, 1],
+    #     [0, 1, 0, 0],
+    #     [0, 1, 2, 3]]
+    # , dtype=float))
+    A = torch.tensor([
+        [1, 0, -3, 2],
+        [0, 1, -2, 1],
+        [0, 0, 3, -2],
+        [0, 0, -1, 1]
+    ], dtype=float, device = t.device)
+    # Calculate each value to the power 0, 1, 2 & 3
+    tt = t[None, :]**torch.arange(4, device=t.device)[:, None]
+    # Multiply by inverse to find result
+    return A @ tt
+
+def resample(x, y, xs):
     """
     Resample onto a new wavelength grid using k=5 spline interpolation
 
     Parameters
     ----------
-    wave : array_like
+    x : array_like
         The original wavelength grid
-    flux : array_like
+    y : array_like
         The fluxes to resample
-    new_wave : array_like
+    xs : array_like
         The new wavelength grid
 
     Raises
@@ -31,16 +53,36 @@ def resample(wave, flux, new_wave):
     numpy.ndarray
         The resampled flux with the same 1st dimension as the input flux
     """
-
-    if np.any(new_wave <= 0):
-        raise ValueError("Wavelengths must be positive")
-
-    if flux.ndim > 1:
-        interpolators = [InterpolatedUnivariateSpline(wave, fl, k=5) for fl in flux]
-        return np.array([interpolator(new_wave) for interpolator in interpolators])
+    # Finite difference
+    # (p_(k+1) - p_(k)) / (x_(k+1) - x_(k))
+    if y.ndim > 1:
+        y = y.T # Change y from (batch, y) to (y, batch)
+        m = (y[1:] - y[:-1]) / ((x[1:] - x[:-1]).unsqueeze(0).expand((y.shape[1], -1)).T)
     else:
-        return InterpolatedUnivariateSpline(wave, flux, k=5)(new_wave)
+        m = (y[1:] - y[:-1]) / (x[1:] - x[:-1])
 
+    # One sided difference at edge of dataset
+    m = torch.cat([m[[0]], (m[1:] + m[:-1]) / 2, m[[-1]]])
+        
+    # idxs contains the mapping to t parameters
+    idxs = torch.searchsorted(x[1:], xs)
+    # The size of the gap for the parameter
+    dx = (x[idxs + 1] - x[idxs])
+
+    # Calculate offset for each new point in terms of t
+    hh = h_poly((xs - x[idxs]) / dx)
+    # Multiply out values
+    # 
+    if y.ndim > 1:
+        dx = dx.unsqueeze(0).expand((y.shape[1], -1)).T
+        hh = hh.unsqueeze(1).expand((-1, y.shape[1], -1)).transpose(1, 2)
+
+
+    out = hh[0] * y[idxs] + hh[1] * m[idxs] * dx + hh[2] * y[idxs + 1] + hh[3] * m[idxs + 1] * dx
+    if y.ndim > 1:
+        return out.T
+    else:
+        return out
 
 def instrumental_broaden(wave, flux, fwhm):
     """
@@ -80,13 +122,13 @@ def instrumental_broaden(wave, flux, fwhm):
     if fwhm < 0:
         raise ValueError("FWHM must be non-negative")
     dv = calculate_dv(wave)
-    freq = np.fft.rfftfreq(flux.shape[-1], d=dv)
-    flux_ff = np.fft.rfft(flux)
+    freq = torch.fft.rfftfreq(flux.shape[-1], d=dv, dtype=torch.float64)
+    flux_ff = torch.fft.rfft(flux)
 
     sigma = fwhm / 2.355
-    flux_ff *= np.exp(-2 * (np.pi * sigma * freq) ** 2)
+    flux_ff *= torch.exp(-2 * (torch.pi * sigma * freq) ** 2)
 
-    flux_final = np.fft.irfft(flux_ff, n=flux.shape[-1])
+    flux_final = torch.fft.irfft(flux_ff, n=flux.shape[-1])
     return flux_final
 
 
@@ -122,15 +164,24 @@ def rotational_broaden(wave, flux, vsini):
         raise ValueError("vsini must be positive")
 
     dv = calculate_dv(wave)
-    freq = np.fft.rfftfreq(flux.shape[-1], dv)
-    flux_ff = np.fft.rfft(flux)
+    freq = torch.fft.rfftfreq(flux.shape[-1], dv, dtype=torch.float64)
+    flux_ff = torch.fft.rfft(flux)
+    
     # Calculate the stellar broadening kernel (Gray 2008)
-    ub = 2.0 * np.pi * vsini * freq
+    # Ensure this is in float64
+    ub = 2.0 * torch.pi * vsini * freq
     # Remove 0th frequency
+    sb = torch.ones_like(ub)
     ub = ub[1:]
-    sb = j1(ub) / ub - 3 * np.cos(ub) / (2 * ub**2) + 3.0 * np.sin(ub) / (2 * ub**3)
-    flux_ff *= np.insert(sb, 0, 1.0)
-    flux_final = np.fft.irfft(flux_ff, n=flux.shape[-1])
+
+    a = torch.special.bessel_j1(ub) / ub
+    b = 3 * torch.cos(ub) / (2 * ub**2)
+    c = 3.0 * torch.sin(ub) / (2 * ub**3)
+
+    sb[1:] = a - b + c
+    # print(sb, sb.shape)
+    flux_ff *= sb
+    flux_final = torch.fft.irfft(flux_ff, n=flux.shape[-1])
     return flux_final
 
 
@@ -154,7 +205,7 @@ def doppler_shift(wave, vz):
         Altered wavelengths with the same shape as the input wavelengths
     """
 
-    dv = np.sqrt((c_kms + vz) / (c_kms - vz))
+    dv = torch.sqrt((c_kms + vz) / (c_kms - vz))
     return wave * dv
 
 
@@ -177,7 +228,7 @@ def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
         The relative attenuation (the default is 3.1, which is the Milky Way average)
     law : str, optional
         The extinction law to use. One of `{'ccm89', 'odonnell94', 'calzetti00',
-        'fitzpatrick99', 'fm07'}` (the default is 'ccm89')
+        'fitzpatrick99', 'fm07'}` (the default is 'ccm89'). Currently 'fitzpatrick99' and 'fm07' are not supported for autograd
 
     Raises
     ------
@@ -191,17 +242,24 @@ def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
     numpy.ndarray
         The extincted fluxes, with same shape as input fluxes.
     """
+    laws = {
+        "ccm89": extinction_t.ccm89,
+        "odonnell94": extinction_t.odonnell94,
+        "calzetti00": extinction_t.calzetti00,
+        "fitzpatrick99": extinction.fitzpatrick99,
+        "fm07": extinction.fm07
+    }
 
-    if law not in ["ccm89", "odonnell94", "calzetti00", "fitzpatrick99", "fm07"]:
+    if law not in laws:
         raise ValueError("Invalid extinction law given")
     if Rv <= 0:
         raise ValueError("Rv must be positive")
 
-    law_fn = eval("extinction.{}".format(law))
+    law_fn = laws[law]
     if law == "fm07":
-        A_l = law_fn(wave.astype(np.double), Av)
+        A_l = law_fn(wave.to(torch.float64), Av)
     else:
-        A_l = law_fn(wave.astype(np.double), Av, Rv)
+        A_l = law_fn(wave.to(torch.float64), Av, Rv)
     flux_final = flux * 10 ** (-0.4 * A_l)
     return flux_final
 
@@ -263,8 +321,8 @@ def renorm(wave, flux, reference_flux):
 
 
 def _get_renorm_factor(wave, flux, reference_flux):
-    ref_int = np.trapz(reference_flux, wave)
-    flux_int = np.trapz(flux, wave, axis=-1)
+    ref_int = torch.trapz(reference_flux, wave)
+    flux_int = torch.trapz(flux, wave, axis=-1)
     return ref_int / flux_int
 
 
@@ -293,7 +351,7 @@ def chebyshev_correct(wave, flux, coeffs):
         If only processing a single spectrum and the linear coefficient is not 1.
     """
     # have to scale wave to fit on domain [0, 1]
-    coeffs = np.asarray(coeffs)
+    coeffs = torch.tensor(coeffs, dtype = torch.float64)
     if coeffs.ndim == 1 and coeffs[0] != 1:
         raise ValueError(
             "For single spectrum the linear Chebyshev coefficient (c[0]) must be 1"

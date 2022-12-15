@@ -7,8 +7,8 @@ import itertools
 
 import numpy as np
 
-
 log = logging.getLogger(__name__)
+
 
 
 def download_PHOENIX_models(path, ranges=None, parameters=None):

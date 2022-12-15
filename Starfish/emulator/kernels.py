@@ -1,6 +1,4 @@
-import scipy as sp
-import numpy as np
-
+import torch
 
 def rbf_kernel(X, Z, variance, lengthscale):
     """
@@ -21,10 +19,8 @@ def rbf_kernel(X, Z, variance, lengthscale):
         The lengthscale for the RBF kernel. Must have same second dimension as `X`
 
     """
-
-    sq_dist = sp.spatial.distance.cdist(X / lengthscale, Z / lengthscale, "sqeuclidean")
-    return variance * np.exp(-0.5 * sq_dist)
-
+    sq_dist = torch.cdist(X / lengthscale, Z / lengthscale).pow(2)
+    return variance * torch.exp(-0.5 * sq_dist)
 
 def batch_kernel(X, Z, variances, lengthscales):
     """
@@ -45,5 +41,6 @@ def batch_kernel(X, Z, variances, lengthscales):
     --------
     :function:`rbf_kernel`
     """
+
     blocks = [rbf_kernel(X, Z, var, ls) for var, ls in zip(variances, lengthscales)]
-    return sp.linalg.block_diag(*blocks)
+    return torch.block_diag(*blocks)
