@@ -14,7 +14,7 @@ from Starfish.grid_tools.utils import determine_chunk_log
 from Starfish.utils import calculate_dv
 from Starfish.param_dict import GroupedParamDict
 from .kernels import batch_kernel
-from ._utils import get_phi_squared, get_w_hat
+from ._utils import get_phi_squared, get_w_hat, reshape_fortran
 import torch
 
 log = logging.getLogger(__name__)
@@ -95,7 +95,8 @@ class Emulator:
             grid_points, factors, rescale=True
         )
 
-        self.dv = calculate_dv(wavelength)
+        
+        self.dv = calculate_dv(self.wl)
         self.ncomps = eigenspectra.shape[0]
 
         self.hyperparams = GroupedParamDict(groupTensors=[False, True], max_depth=1)
@@ -116,8 +117,8 @@ class Emulator:
         self.lengthscales = torch.DoubleTensor(lengthscales)
 
         # Determine the minimum and maximum bounds of the grid
-        self.min_params = grid_points.min(axis=0)
-        self.max_params = grid_points.max(axis=0)
+        self.min_params = self.grid_points.min(axis=0).values
+        self.max_params = self.grid_points.max(axis=0).values
 
         # TODO find better variable names for the following
         self.iPhiPhi = torch.DoubleTensor(torch.linalg.inv(
@@ -302,6 +303,8 @@ class Emulator:
         log.info(
             f"PCA fit {exp_var * 100:.2f}% of the variance with {pca.n_components_:d} components."
         )
+
+
         w_hat = get_w_hat(torch.DoubleTensor(eigenspectra), torch.DoubleTensor(fluxes))
 
         emulator = cls(
@@ -350,7 +353,7 @@ class Emulator:
         ValueError
             If querying the emulator outside of its trained grid points
         """
-        params = np.atleast_2d(params)
+        params = torch.atleast_2d(params)
 
         if full_cov and reinterpret_batch:
             raise ValueError(
@@ -364,7 +367,7 @@ class Emulator:
             )
 
         # If the pars is outside of the range of emulator values, raise a ModelError
-        if np.any(params < self.min_params) or np.any(params > self.max_params):
+        if torch.any(params < self.min_params) or torch.any(params > self.max_params):
             raise ValueError("Querying emulator outside of original parameter range.", params)
 
         # Do this according to R&W eqn 2.18, 2.19
@@ -379,8 +382,10 @@ class Emulator:
         if not full_cov:
             cov = torch.diag(cov)
         if reinterpret_batch:
-            mu = mu.reshape(-1, self.ncomps, order="F").squeeze()
-            cov = cov.reshape(-1, self.ncomps, order="F").squeeze()
+            mu = reshape_fortran(mu, (-1, self.ncomps)).squeeze()
+            cov = reshape_fortran(cov, (-1, self.ncomps)).squeeze()
+            # mu = mu.reshape(-1, self.ncomps, order="F").squeeze()
+            # cov = cov.reshape(-1, self.ncomps, order="F").squeeze()
         return mu, cov
 
     @property
@@ -389,7 +394,7 @@ class Emulator:
         numpy.ndarray: A vertically concatenated vector of the eigenspectra, flux_mean,
         and flux_std (in that order). Used for bulk processing with the emulator.
         """
-        return np.vstack([self.eigenspectra, self.flux_mean, self.flux_std])
+        return torch.vstack([self.eigenspectra, self.flux_mean, self.flux_std])
 
     def load_flux(
         self, params: Union[Sequence[float], NDArray[float]], norm=False
@@ -409,12 +414,13 @@ class Emulator:
         flux : numpy.ndarray
         """
         mu, cov = self(params, reinterpret_batch=False)
-        weights = np.random.multivariate_normal(mu, cov).reshape(-1, self.ncomps)
+        weights = torch.DoubleTensor(np.random.multivariate_normal(mu.numpy(), cov.numpy()).reshape(-1, self.ncomps))
+        # weights = torch.distributions.MultivariateNormal(mu, cov).sample().reshape(-1, self.ncomps)
         X = self.eigenspectra * self.flux_std
         flux = weights @ X + self.flux_mean
         if norm:
-            flux *= self.norm_factor(params)[:, np.newaxis]
-        return np.squeeze(flux)
+            flux *= self.norm_factor(params).unsqueeze(1)
+        return flux.squeeze()
 
     def norm_factor(self, params: Union[Sequence[float], NDArray[float]]) -> float:
         """
@@ -431,7 +437,7 @@ class Emulator:
             The multiplicative factor to normalize a spectrum to the model's absolute flux units
         """
         _params = np.asarray(params)
-        return self.factor_interpolator(_params)
+        return torch.DoubleTensor(self.factor_interpolator(_params))
 
     def determine_chunk_log(self, wavelength: Sequence[float], buffer: float = 50):
         """
@@ -601,34 +607,6 @@ class Emulator:
         self.v11 = self.iPhiPhi / self.lambda_xi + batch_kernel(
             self.grid_points, self.grid_points, self.variances, self.lengthscales
         )
-
-    def get_param_vector(self) -> NDArray[float]:
-        """
-        Get a vector of the current trainable parameters of the emulator
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-        return self.get_param_dict().values()
-
-    def set_param_vector(self, params: NDArray[float]):
-        """
-        Set the current trainable parameters given a vector. Must have the same form as
-        :meth:`get_param_vector`
-
-        Parameters
-        ----------
-        params : numpy.ndarray
-        """
-        parameters = self.get_param_dict()
-        if len(params) != len(parameters):
-            raise ValueError(
-                "params must match length of parameters (get_param_vector())"
-            )
-
-        param_dict = dict(zip(self.get_param_dict().keys(), params))
-        self.set_param_dict(param_dict)
 
     def log_likelihood(self) -> float:
         """

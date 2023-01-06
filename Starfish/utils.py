@@ -23,8 +23,7 @@ def calculate_dv(wave: Sequence):
     float
         delta-v in units of km/s
     """
-    wave = torch.tensor(wave)
-    return C.c_kms * torch.min(torch.diff(wave) / wave[:-1])
+    return C.c_kms * torch.min(torch.diff(wave) / wave[..., :-1])
 
 
 def calculate_dv_dict(wave_dict):

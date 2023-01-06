@@ -11,5 +11,6 @@ __all__ = [
     "spectrum",
     "Spectrum",
     "transforms",
+    "scalers"
     "utils",
 ]

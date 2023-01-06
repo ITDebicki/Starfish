@@ -53,6 +53,10 @@ def resample(x, y, xs):
     numpy.ndarray
         The resampled flux with the same 1st dimension as the input flux
     """
+    # # Check for strictly increasing monotonic
+    # print(xs)
+    # if not torch.all(xs[1:] - xs[:-1] > 0):
+    #     raise ValueError("New wavelength grid must be strictly increasing monotonic")
     # Finite difference
     # (p_(k+1) - p_(k)) / (x_(k+1) - x_(k))
     if y.ndim > 1:
@@ -257,7 +261,9 @@ def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
 
     law_fn = laws[law]
     if law == "fm07":
-        A_l = law_fn(wave.to(torch.float64), Av)
+        A_l = torch.from_numpy(law_fn(wave.to(torch.float64).numpy(), Av.numpy()))
+    elif law == 'fitzpatrick99':
+        A_l = torch.from_numpy(law_fn(wave.to(torch.float64).numpy(), Av.numpy(), Rv.numpy()))
     else:
         A_l = law_fn(wave.to(torch.float64), Av, Rv)
     flux_final = flux * 10 ** (-0.4 * A_l)
@@ -283,9 +289,11 @@ def rescale(flux, scale):
     numpy.ndarray
         The rescaled fluxes with the same shape as the input fluxes
     """
-    scale = np.atleast_1d(scale)
+    if isinstance(scale, (int, float)):
+        scale = torch.DoubleTensor([scale])
+    scale = torch.atleast_1d(scale)
     if len(scale) > 1:
-        scale = scale[:, np.newaxis]
+        scale = scale.unsqueeze(1)
     return flux * scale
 
 

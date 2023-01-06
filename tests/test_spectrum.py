@@ -2,6 +2,7 @@ import os
 
 import numpy as np
 import pytest
+import torch
 
 from Starfish import Spectrum
 from Starfish.spectrum import Order
@@ -11,14 +12,14 @@ class TestOrder:
     def test_no_sigma(self, mock_data):
         wave, flux = mock_data
         order = Order(wave, flux)
-        assert np.all(order._sigma == 0.0)
-        assert np.all(order.mask)
+        assert torch.all(order._sigma == 0.0)
+        assert torch.all(order.mask)
 
     def test_no_mask(self, mock_data):
         wave, flux = mock_data
-        sigma = np.random.randn(len(wave))
+        sigma = torch.DoubleTensor(np.random.randn(len(wave)))
         order = Order(wave, flux, sigma)
-        assert np.all(order.mask)
+        assert torch.all(order.mask)
 
     def test_masking(self, mock_data):
         wave, flux = mock_data
@@ -39,8 +40,8 @@ class TestSpectrum:
     def test_reshaping(self):
         waves = [np.linspace(1e4, 2e4, 100), np.linspace(2e4, 3e4, 100)]
         fluxes = [np.sin(waves[0]), np.cos(waves[1])]
-        wave = np.hstack(waves)
-        flux = np.hstack(fluxes)
+        wave = torch.DoubleTensor(np.hstack(waves))
+        flux = torch.DoubleTensor(np.hstack(fluxes))
         data = Spectrum(wave, flux, name="single")
         assert data.shape == (1, 200)
         reshaped = data.reshape((2, -1))
@@ -61,7 +62,7 @@ class TestSpectrum:
         mock_spectrum.name = "special"
         assert str(mock_spectrum).startswith("special")
         for i, order in enumerate(mock_spectrum):
-            assert order == mock_spectrum[i]
+            assert torch.all(order == mock_spectrum[i])
         reshape_spec = mock_spectrum.reshape((2, -1))
         reshape_spec[0], reshape_spec[1] = reshape_spec[1], reshape_spec[0]
 
@@ -74,7 +75,7 @@ class TestSpectrum:
         filename = os.path.join(tmpdir, "data.hdf5")
         mock_spectrum.save(filename)
         new_spectrum = Spectrum.load(filename)
-        assert np.all(new_spectrum.waves == mock_spectrum.waves)
-        assert np.all(new_spectrum.fluxes == mock_spectrum.fluxes)
-        assert np.all(new_spectrum.sigmas == mock_spectrum.sigmas)
-        assert np.all(new_spectrum.masks == mock_spectrum.masks)
+        assert torch.all(new_spectrum.waves == mock_spectrum.waves)
+        assert torch.all(new_spectrum.fluxes == mock_spectrum.fluxes)
+        assert torch.all(new_spectrum.sigmas == mock_spectrum.sigmas)
+        assert torch.all(new_spectrum.masks == mock_spectrum.masks)

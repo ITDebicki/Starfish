@@ -25,14 +25,14 @@ def global_covariance_matrix(
     cov : numpy.ndarray
         The global covariance matrix
     """
-    wx, wy = torch.meshgrid(wave, wave)
-    r = C.c_kms / 2 * np.abs((wx - wy) / (wx + wy))
+    wx, wy = torch.meshgrid(wave, wave, indexing='xy')
+    r = C.c_kms / 2 * torch.abs((wx - wy) / (wx + wy))
     r0 = 6 * lengthscale
 
     # Calculate the kernel, being careful to stay in mask
     kernel = torch.zeros((len(wx), len(wy)), dtype = wave.dtype, device = wave.device)
     mask = r <= r0
-    taper = 0.5 + 0.5 * np.cos(np.pi * r[mask] / r0)
+    taper = 0.5 + 0.5 * torch.cos(torch.pi * r[mask] / r0)
     kernel[mask] = (
         taper
         * amplitude
@@ -69,8 +69,8 @@ def local_covariance_matrix(
     """
     # Set up the metric and mesh grid
     met = C.c_kms / mu * torch.abs(wave - mu)
-    x, y = torch.meshgrid(met, met)
-    r_tap = torch.max([x, y], axis=0)
+    x, y = torch.meshgrid(met, met, indexing='xy')
+    r_tap, _ = torch.max(torch.stack([x, y]), axis=0)
     r2 = x**2 + y**2
     r0 = 4 * sigma
 

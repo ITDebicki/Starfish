@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from Starfish.emulator.kernels import rbf_kernel, batch_kernel
 
@@ -9,13 +10,13 @@ def mock_params():
     params = np.array((100, 1, 0.1), dtype=np.double) * np.random.randn(
         200, 3
     ) + np.tile((6000, 4, 0), (200, 1))
-    return params
+    return torch.DoubleTensor(params)
 
 
 @pytest.fixture
 def mock_kern_params():
-    variances = np.ones(6)
-    lengthscales = np.ones((6, 3))
+    variances = torch.ones(6, dtype=torch.float64)
+    lengthscales = torch.ones((6, 3), dtype=torch.float64)
     return variances, lengthscales
 
 
@@ -24,8 +25,8 @@ class TestKernel:
         variances, lengthscales = mock_kern_params
         cov = rbf_kernel(mock_params, mock_params, variances[0], lengthscales[0])
         assert cov.shape == (len(mock_params), len(mock_params))
-        assert np.allclose(cov, cov.T)
-        assert np.all(cov.diagonal() >= 0.0)
+        assert torch.allclose(cov, cov.T)
+        assert torch.all(cov.diagonal() >= 0.0)
 
     def test_rbf_kernel_diff(self, mock_params, mock_kern_params):
         variances, lengthscales = mock_kern_params
@@ -42,8 +43,8 @@ class TestBatchKernel:
             len(variances) * len(mock_params),
             len(variances) * len(mock_params),
         )
-        assert np.allclose(cov, cov.T)
-        assert np.all(cov.diagonal() >= 0.0)
+        assert torch.allclose(cov, cov.T)
+        assert torch.all(cov.diagonal() >= 0.0)
 
     def test_batch_kernel_diff(self, mock_params, mock_kern_params):
         variances, lengthscales = mock_kern_params

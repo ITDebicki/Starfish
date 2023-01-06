@@ -3,6 +3,7 @@ import numpy as np
 from dataclasses import dataclass
 from nptyping import NDArray
 from typing import Optional
+import torch
 
 
 @dataclass
@@ -26,16 +27,16 @@ class Order:
     name : str
     """
 
-    _wave: NDArray[float]
-    _flux: NDArray[float]
-    _sigma: Optional[NDArray[float]] = None
-    mask: Optional[NDArray[bool]] = None
+    _wave: torch.DoubleTensor
+    _flux: torch.DoubleTensor
+    _sigma: Optional[torch.DoubleTensor] = None
+    mask: Optional[torch.DoubleTensor] = None
 
     def __post_init__(self):
         if self._sigma is None:
-            self._sigma = np.zeros_like(self._flux)
+            self._sigma = torch.zeros_like(self._flux)
         if self.mask is None:
-            self.mask = np.ones_like(self._wave, dtype=bool)
+            self.mask = torch.ones_like(self._wave, dtype=bool)
 
     @property
     def wave(self):
@@ -94,45 +95,46 @@ class Spectrum:
     """
 
     def __init__(self, waves, fluxes, sigmas=None, masks=None, name="Spectrum"):
-        waves = np.atleast_2d(waves)
-        fluxes = np.atleast_2d(fluxes)
+        self._waves = torch.atleast_2d(waves)
+        self._fluxes = torch.atleast_2d(fluxes)
 
         if sigmas is not None:
-            sigmas = np.atleast_2d(sigmas)
+            self._sigmas = torch.atleast_2d(sigmas)
         else:
-            sigmas = np.ones_like(fluxes)
+            self._sigmas = torch.ones_like(fluxes)
 
         if masks is not None:
-            masks = np.atleast_2d(masks).astype(bool)
+            self.masks = torch.atleast_2d(masks).to(bool)
         else:
-            masks = np.ones_like(waves, dtype=bool)
-        assert fluxes.shape == waves.shape, "flux array incompatible shape."
-        assert sigmas.shape == waves.shape, "sigma array incompatible shape."
-        assert masks.shape == waves.shape, "mask array incompatible shape."
-        self.orders = []
-        for i in range(len(waves)):
-            self.orders.append(Order(waves[i], fluxes[i], sigmas[i], masks[i]))
+            self.masks = torch.ones_like(self._waves, dtype=bool)
+        assert self._fluxes.shape == self._waves.shape, "flux array incompatible shape."
+        assert self._sigmas.shape == self._waves.shape, "sigma array incompatible shape."
+        assert self.masks.shape == self._waves.shape, "mask array incompatible shape."
+
         self.name = name
 
     def __getitem__(self, index: int):
-        return self.orders[index]
+        return Order(self._waves[index], self._fluxes[index], self._sigmas[index], self.masks[index])
 
     def __setitem__(self, index: int, order: Order):
-        if len(order) != len(self.orders[0]):
+        if len(order) != self._waves.shape[1]:
             raise ValueError("Invalid order length; no ragged spectra allowed")
-        self.orders[index] = order
+        self._waves[index] = order._wave
+        self._fluxes[index] = order._flux
+        self.masks[index] = order.mask
+        self._sigmas[index] = order._sigma
 
     def __len__(self):
-        return len(self.orders)
+        return self._waves.shape[0]
 
     def __iter__(self):
         self._n = 0
         return self
 
     def __next__(self):
-        if self._n < len(self.orders):
+        if self._n < len(self):
             n, self._n = self._n, self._n + 1
-            return self.orders[n]
+            return self[n]
         else:
             raise StopIteration
 
@@ -142,48 +144,21 @@ class Spectrum:
         """
         numpy.ndarray : The 2 dimensional masked wavelength arrays
         """
-        waves = [o.wave for o in self.orders]
-        return np.asarray(waves)
+        return self._waves[self.masks]
 
     @property
     def fluxes(self) -> np.ndarray:
         """
         numpy.ndarray : The 2 dimensional masked flux arrays
         """
-        fluxes = [o.flux for o in self.orders]
-        return np.asarray(fluxes)
+        return self._fluxes[self.masks]
 
     @property
     def sigmas(self) -> np.ndarray:
         """
         numpy.ndarray : The 2 dimensional masked flux uncertainty arrays
         """
-        sigmas = [o.sigma for o in self.orders]
-        return np.asarray(sigmas)
-
-    # Unmasked properties
-    @property
-    def _waves(self) -> np.ndarray:
-        _waves = [o._wave for o in self.orders]
-        return np.asarray(_waves)
-
-    @property
-    def _fluxes(self) -> np.ndarray:
-        _fluxes = [o._flux for o in self.orders]
-        return np.asarray(_fluxes)
-
-    @property
-    def _sigmas(self) -> np.ndarray:
-        _sigmas = [o._sigma for o in self.orders]
-        return np.asarray(_sigmas)
-
-    @property
-    def masks(self) -> np.ndarray:
-        """
-        np.ndarray: The full 2-dimensional boolean masks
-        """
-        waves = [o.wave for o in self.orders]
-        return np.asarray(waves)
+        return self._sigmas[self.masks]
 
     @property
     def shape(self):
@@ -192,12 +167,11 @@ class Spectrum:
 
         :setter: Tries to reshape the data into a new arrangement of orders and pixels following numpy reshaping rules.
         """
-        return (len(self), len(self.orders[0]))
+        return self._waves.shape
 
     @shape.setter
     def shape(self, shape):
-        new = self.reshape(shape)
-        self.__dict__.update(new.__dict__)
+        self.reshape(shape)
 
     def reshape(self, shape):
         """
@@ -213,11 +187,10 @@ class Spectrum:
         Spectrum
             The reshaped spectrum
         """
-        waves = self._waves.reshape(shape)
-        fluxes = self._fluxes.reshape(shape)
-        sigmas = self._sigmas.reshape(shape)
-        masks = self.masks.reshape(shape)
-        return self.__class__(waves, fluxes, sigmas, masks, name=self.name)
+        self._waves = self._waves.reshape(shape)
+        self._fluxes = self._fluxes.reshape(shape)
+        self._sigmas = self._sigmas.reshape(shape)
+        self.masks = self.masks.reshape(shape)
 
     @classmethod
     def load(cls, filename):
@@ -238,10 +211,10 @@ class Spectrum:
                 name = base.attrs["name"]
             else:
                 name = None
-            waves = base["waves"][:]
-            fluxes = base["fluxes"][:]
-            sigmas = base["sigmas"][:]
-            masks = base["masks"][:]
+            waves = torch.DoubleTensor(base["waves"][:])
+            fluxes = torch.DoubleTensor(base["fluxes"][:])
+            sigmas = torch.DoubleTensor(base["sigmas"][:])
+            masks = torch.BoolTensor(base["masks"][:])
         return cls(waves, fluxes, sigmas, masks, name=name)
 
     def save(self, filename):
@@ -289,18 +262,18 @@ class Spectrum:
         plot_params = {"lw": 0.5}
         plot_params.update(kwargs)
         # Plot orders
-        for i, order in enumerate(self.orders):
-            ax.plot(order._wave, order._flux, label=f"Order: {i}", **plot_params)
+        for i, order in enumerate(self):
+            ax.plot(order._wave.numpy(), order._flux.numpy(), label=f"Order: {i}", **plot_params)
 
         # Now plot masks
         ylims = ax.get_ylim()
-        for i, order in enumerate(self.orders):
+        for i, order in enumerate(self):
             ax.fill_between(
-                order._wave,
+                order._wave.numpy(),
                 *ylims,
                 color="k",
                 alpha=0.1,
-                where=~order.mask,
+                where=~order.mask.numpy(),
                 label="Mask" if i == 0 else None,
             )
 
@@ -314,4 +287,4 @@ class Spectrum:
         return ax
 
     def __repr__(self):
-        return f"{self.name} ({self.waves.shape[0]} orders)"
+        return f"{self.name} ({len(self)} orders)"

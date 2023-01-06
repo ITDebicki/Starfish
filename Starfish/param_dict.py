@@ -1,6 +1,17 @@
 from collections.abc import Sequence, Mapping, MutableMapping
+from typing import List
 import torch
 import numpy as np
+import warnings
+from .scalers import ParamScaler
+
+def preprocess_dict(d):
+    if isinstance(d, Sequence) and isinstance(d[0], Mapping):
+        return {str(i): preprocess_dict(d[i]) for i in range(len(d))}
+    elif isinstance(d, Mapping):
+        return {k: preprocess_dict(v) for k, v in d.items()}
+    return d
+
 
 class GroupedParamDict(MutableMapping):
 
@@ -15,27 +26,31 @@ class GroupedParamDict(MutableMapping):
             self.groupNestedTensors = groupTensors[1:]
         self.error_on_hidden_override = error_on_hidden_override
 
-        isGrouped = groupTensors if isinstance(groupTensors, bool) else groupTensors[0]
+        self._isGrouped = groupTensors if isinstance(groupTensors, bool) else groupTensors[0]
+        self.requires_grad = False
 
         # Set correct functions
-        self._set_item = self._set_grouped if isGrouped else self._set_single
-        self._get_item = self._get_item_grouped if isGrouped else self._get_item_single
-        self._del_item = self._del_item_grouped if isGrouped else self._del_item_single
-        self.clean = self._clean_grouped if isGrouped else self._clean_single
-        self._values_f = self._values_grouped if isGrouped else self._values_single
-        self.params = self._params_grouped if isGrouped else self._params_single
+        self._set_item = self._set_grouped if self._isGrouped else self._set_single
+        self._get_item = self._get_item_grouped if self._isGrouped else self._get_item_single
+        self._del_item = self._del_item_grouped if self._isGrouped else self._del_item_single
+        self.clean = self._clean_grouped if self._isGrouped else self._clean_single
+        self._values_f = self._values_grouped if self._isGrouped else self._values_single
+        self.params = self._params_grouped if self._isGrouped else self._params_single
 
         self._frozen = set()
 
-        if isGrouped:
+        self._scalers = {}
+
+        if self._isGrouped:
             self._values = torch.zeros(10, dtype = float)
+            self._next = 0
             self._unused_indices = []
 
         self._d = {}
         self._size = 0
 
         if d is not None:
-            item_stack = list(d.items())
+            item_stack = list(preprocess_dict(d).items())
             while len(item_stack) > 0:
                 k, v = item_stack.pop()
                 if isinstance(v, Mapping):
@@ -56,7 +71,7 @@ class GroupedParamDict(MutableMapping):
                 if self.error_on_hidden_override:
                     raise KeyError("Attempted to override single value with grouped dictionary")
                 else:
-                    print("Overwriting value with grouped dictionary")
+                    warnings.warn("Overwriting value with grouped dictionary")
                 del self[keyParts[0]]
             if keyParts[0] not in self._d:
                 self._d[keyParts[0]] = GroupedParamDict(
@@ -80,14 +95,14 @@ class GroupedParamDict(MutableMapping):
             if self.error_on_hidden_override:
                 raise KeyError("Attempted to override grouped parameters with single value")
             else:
-                print("Overwriting grouped parameters with single value")
+                warnings.warn("Overwriting grouped parameters with single value")
             del self._d[key]
-        if key in self._d and t.shape == self._d[key].shape:
-            self._d[key][:] = t
+        if key in self._d and t.shape == self._d[key].shape and not self._d[key].requires_grad:
+            self._d[key][:] = self._scalers[key].standardize(t) if key in self._scalers else t
             expanded = 1
         else:
             expanded = 1 if key in self._d else 0
-            self._d[key] = t
+            self._d[key] = self._scalers[key].standardize(t) if key in self._scalers else t
         return expanded
 
     def _set_grouped(self, key, value):
@@ -96,16 +111,17 @@ class GroupedParamDict(MutableMapping):
             if self.error_on_hidden_override:
                 raise KeyError("Attempted to override grouped parameters with single value")
             else:
-                print("Overwriting grouped parameters with single value")
+                warnings.warn("Overwriting grouped parameters with single value")
             del self._d[key]
         if key not in self._d:
-            self._d[key] = len(self._d)
-            if len(self._d) >= len(self._values):
+            self._d[key] = self._next
+            self._next += 1
+            if self._next >= len(self._values):
                 tmp = torch.zeros(len(self._values) + 10, dtype = float)
-                tmp[:len(self._d)] = self._values
+                tmp[:self._next] = self._values
                 self._values = tmp
             expanded = 1
-        self._values[self._d[key]] = value
+        self._values[self._d[key]] = self._scalers[key].standardize(value) if key in self._scalers else value
         return expanded
 
     def __getitem__(self, key):
@@ -122,10 +138,16 @@ class GroupedParamDict(MutableMapping):
             raise KeyError("Key not in dictionary")
     
     def _get_item_single(self, key):
-        return self._d[key]
+        if key in self._scalers:
+            return self._scalers[key].original(self._d[key])
+        else:
+            return self._d[key]
 
     def _get_item_grouped(self, key):
-        return self._values[self._d[key]]
+        if key in self._scalers:
+            return self._scalers[key].original(self._values[self._d[key]])
+        else:
+            return self._values[self._d[key]]
 
     def __contains__(self, key):
         key = str(key)
@@ -135,10 +157,10 @@ class GroupedParamDict(MutableMapping):
         if len(keyParts) == 1:
             return keyParts[0] in self._d
         else:
-            return keyParts[0] in self._d and isinstance(self._d[keyParts[0]], GroupedParamDict) and self._d._contains_hierarchical(keyParts[1:])
+            return keyParts[0] in self._d and isinstance(self._d[keyParts[0]], GroupedParamDict) and self._d[keyParts[0]]._contains_hierarchical(keyParts[1:])
 
     def __len__(self):
-        return self._size
+        return len(self._d)
 
     def __delitem__(self, key):
         key = str(key)
@@ -177,6 +199,7 @@ class GroupedParamDict(MutableMapping):
                 if not isinstance(self._d[key], GroupedParamDict) and self._d[key] > idx:
                     self._d[key] -= 1
             self._values[idx:-1] = self._values[idx + 1:].clone()
+            self._next -= 1
         self._clean_single()
 
     def values(self, flat = False):
@@ -205,36 +228,55 @@ class GroupedParamDict(MutableMapping):
 
     def _values_single(self):
         values = []
-        for v in self._d.values():
+        for k, v in self._d.items():
             if isinstance(v, GroupedParamDict):
                 values.extend(v.values())
             else:
-                values.append(v)
+                if k in self._scalers:
+                    values.append(self._scalers[k].original(v))
+                else:
+                    values.append(v)
         return values
 
     def _values_grouped(self):
         if len(self._unused_indices) > 0:
             self.clean()
-        return [self._values[:len(self._d)]] + [v.values() for v in self._d.values() if isinstance(v, GroupedParamDict)]
+        if len(self._scalers) > 0:
+            return [self._scalers[k].original(self._values[idx]) if k in self._scalers else self._values[idx] for k, idx in self._d.items() if isinstance(idx, int)] + [v.values() for v in self._d.values() if isinstance(v, GroupedParamDict)]
+        else:
+            return [self._values[:len(self._d)]] + [v.values() for v in self._d.values() if isinstance(v, GroupedParamDict)]
 
-    def keys(self, deep = False):
+    def keys(self, deep = False, include_frozen = True):
         if deep:
             keys = []
             for k in self._d.keys():
-                if isinstance(self._d[k], GroupedParamDict):
-                    keys.extend([k + self.separator + k_nested for k_nested in self._d[k].keys(True)])
-                else:
-                    keys.append(k)
+                if include_frozen or k not in self._frozen:
+                    if isinstance(self._d[k], GroupedParamDict):
+                        keys.extend([k + self.separator + k_nested for k_nested in self._d[k].keys(deep, include_frozen)])
+                    else:
+                        keys.append(k)
             return keys
         else:
-            return self._d.keys()
+            return [k for k in self._d.keys() if include_frozen or k not in self._frozen]
 
-    def items(self):
-        keys = self.keys(True)
+    def items(self, deep = True, include_frozen = True):
+        keys = self.keys(deep, include_frozen)
         return [(k, self[k]) for k in keys]
 
     def __iter__(self):
         return self.keys(True).__iter__()
+
+    def update(self, d):
+        item_stack = list(preprocess_dict(d).items())
+        while len(item_stack) > 0:
+            k, v = item_stack.pop()
+            if isinstance(v, Mapping):
+                item_stack.extend([(k + self.separator + sub_k, sub_v) for sub_k, sub_v in v.items()])
+            else:
+                self[k] = v
+
+    def frozen(self, deep = True):
+        return set(self.keys(deep, include_frozen = True)) - set(self.keys(deep, include_frozen = False))
 
     def freeze(self, keys = None):
         if keys is None:
@@ -247,19 +289,23 @@ class GroupedParamDict(MutableMapping):
     def _freeze_hierarchical(self, keyParts):
         if len(keyParts) == 1:
             if keyParts[0] not in self._d:
-                raise KeyError("Key not present in dictionary")
+                pass
+                # raise KeyError("Key not present in dictionary")
             elif isinstance(self._d[keyParts[0]], int): # Must be grouped
                 raise KeyError("Cannot freeze only one part of parameter group")
             else:
                 self._frozen.add(keyParts[0])
+                # Disable requires grad
+                self._d[keyParts[0]].requires_grad_(False)
         elif keyParts[0] in self._d and isinstance(self._d[keyParts[0]], GroupedParamDict):
             self._d[keyParts[0]]._freeze_hierarchical(keyParts[1:])
         else:
-            raise KeyError("Key not present in dictionary")
+            pass
+            # raise KeyError("Key not present in dictionary")
 
     def thaw(self, keys = None):
         if keys is None:
-            keys = self.keys(True)
+            keys = self.keys(True, True)
         elif isinstance(keys, str):
             keys = [keys]
         for k in keys:
@@ -268,18 +314,86 @@ class GroupedParamDict(MutableMapping):
     def _thaw_hierarchical(self, keyParts):
         if len(keyParts) == 1:
             if keyParts[0] not in self._d:
-                raise KeyError("Key not present in dictionary")
+                pass
+                # raise KeyError("Key not present in dictionary")
             elif isinstance(self._d[keyParts[0]], int): # Must be grouped
                 raise KeyError("Cannot freeze only one part of parameter group")
             else:
-                self._frozen.remove(keyParts[0])
+                if keyParts[0] in self._frozen:
+                    self._frozen.remove(keyParts[0])
+                self._d[keyParts[0]].requires_grad_(self.requires_grad)
         elif keyParts[0] in self._d and isinstance(self._d[keyParts[0]], GroupedParamDict):
-            self._d[keyParts[0]]._freeze_hierarchical(keyParts[1:])
+            self._d[keyParts[0]]._thaw_hierarchical(keyParts[1:])
         else:
-            raise KeyError("Key not present in dictionary")
+            pass
+            # raise KeyError("Key not present in dictionary")
+
+    def scalers(self):
+        scalers = {}
+        for k, scaler in self._scalers.items():
+            scalers[k] = scaler
+        for k, v in self._d.items():
+            if isinstance(v, GroupedParamDict):
+                scalers.update(v.scalers())
+        return scalers
+
+    def apply_scaler(self, key: str, scaler: ParamScaler):
+        return self._apply_scaler_hierarchical(key.split(self.separator), scaler)
+
+    def _apply_scaler_hierarchical(self, keys: List[str], scaler: ParamScaler):
+        if len(keys) == 1:
+            if keys[0] in self._scalers:
+                if keys[0] in self._d:
+                    self._d[keys[0]] = self._scalers[keys[0]].original(self._d[keys[0]])
+            self._scalers[keys[0]] = scaler
+            if keys[0] in self._d:
+                self._d[keys[0]] = scaler.standardize(self._d[keys[0]])
+        else:
+            # Check if exists
+            if keys[0] not in self._d:
+                self._d[keys[0]] = GroupedParamDict(
+                                                separator = self.separator,
+                                                max_depth = self.max_depth - 1,
+                                                groupTensors = self.groupNestedTensors)
+
+            self._d[keys[0]]._apply_scaler_hierarchical(keys[1:], scaler)
+                
+
+    def remove_scaler(self, key:str):
+        return self._remove_scaler_hierarchical(key.split(self.separator))
+    
+    def _remove_scaler_hierarchical(self, keys:List[str]):
+        if len(keys) == 1:
+            if keys[0] in self._d:
+                self._d[keys[0]] = self._scalers[keys[0]].original(self._d[keys[0]])
+            del self._scalers[keys[0]]
+        else:
+            self._d[keys[0]]._remove_scaler_hierarchical(keys[1:])
+
 
     def requires_grad_(self, requires_grad):
         [p.requires_grad_(requires_grad) for p in self.params()]
+        self.requires_grad = requires_grad
+
+    def to_dict_storage(self):
+        frozen_keys = set(self.keys(deep = True)) - set(set(self.keys(deep = True, include_frozen = False)))
+        return {
+            'groupTensors': [self._isGrouped] + ([self.groupNestedTensors] if isinstance(self.groupNestedTensors, bool) else self.groupNestedTensors),
+            'separator': self.separator,
+            'scalers': {k: s.serialize() for k, s in self.scalers().items()},
+            'max_depth': self.max_depth,
+            'error_on_hidden_override': self.error_on_hidden_override,
+            'frozen_keys': frozen_keys,
+            'items': {k: v.item() for k, v in self.items()}
+        }
+        
+    @staticmethod
+    def from_dict_storage(d):
+        params = GroupedParamDict(d['items'], d['separator'], d['max_depth'], d['groupTensors'], d['error_on_hidden_override'])
+        params.freeze(d['frozen_keys'])
+        for k, s in d['scalers'].items():
+            params.apply_scaler(k, ParamScaler.deserialize(s))
+        return params
 
     def __repr__(self):
         return "<GroupedParamDict {" + ', '.join(["'" + name + "': " + str(val) for name, val in self.items()]) + "}>"

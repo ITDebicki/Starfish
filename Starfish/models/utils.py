@@ -4,6 +4,7 @@ import numpy as np
 from nptyping import NDArray
 from scipy.optimize import minimize
 import scipy.stats as st
+import torch
 
 import Starfish.constants as C
 from .kernels import global_covariance_matrix
@@ -38,12 +39,12 @@ def find_residual_peaks(
     residual = np.mean(list(model.residuals)[-num_residuals:], axis=0)
     sigma = residual.std()
     if "global_cov" in model.params:
-        ag = np.exp(model.params["global_cov:log_amp"])
-        lg = np.exp(model.params["global_cov:log_ls"])
-        sigma += global_covariance_matrix(model.data.wave, ag, lg).diagonal()
+        ag = torch.exp(model.params["global_cov:log_amp"])
+        lg = torch.exp(model.params["global_cov:log_ls"])
+        sigma += global_covariance_matrix(model.data.wave, ag, lg).diagonal().numpy()
     mask = np.abs(residual - residual.mean()) > threshold * sigma
-    mask &= (model.data.wave > wl_range[0]) & (model.data.wave < wl_range[1])
-    peak_waves = model.data.wave[1:-1][mask[1:-1]]
+    mask &= (model.data.wave.numpy() > wl_range[0]) & (model.data.wave.numpy() < wl_range[1])
+    peak_waves = model.data.wave[1:-1][mask[1:-1]].numpy()
     mus = []
     covered = np.zeros_like(peak_waves, dtype=bool)
     # Sort from largest residual to smallest
@@ -94,9 +95,9 @@ def optimize_residual_peaks(model, mus, threshold=0.1, sigma0=50, num_residuals=
     residual = np.mean(list(model.residuals)[-num_residuals:], axis=0)
     amp_cutoff = threshold * residual.std()
     if "global_cov" in model.params:
-        ag = np.exp(model.params["global_cov:log_amp"])
-        lg = np.exp(model.params["global_cov:log_ls"])
-        global_cov = global_covariance_matrix(model.data.wave, ag, lg)
+        ag = torch.exp(model.params["global_cov:log_amp"])
+        lg = torch.exp(model.params["global_cov:log_ls"])
+        global_cov = global_covariance_matrix(model.data.wave, ag, lg).numpy()
     else:
         global_cov = None
 
@@ -124,10 +125,10 @@ def optimize_residual_peaks(model, mus, threshold=0.1, sigma0=50, num_residuals=
     params = []
 
     for mu in mus:
-        mask = (model.data.wave > mu - sigma0) & (model.data.wave < mu + sigma0)
-        wave = model.data.wave[mask]
+        mask = (model.data.wave.numpy() > mu - sigma0) & (model.data.wave.numpy() < mu + sigma0)
+        wave = model.data.wave[mask].numpy()
         resid = residual[mask]
-        sigma = model.data.sigma[mask]
+        sigma = model.data.sigma[mask].numpy()
         if global_cov is not None:
             sigma += global_cov.diagonal()[mask]
 

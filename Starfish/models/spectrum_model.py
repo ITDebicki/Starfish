@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Union, Sequence, Optional
+from typing import Union, Sequence, Optional, List
 import logging
 
 from flatdict import FlatterDict
@@ -140,7 +140,7 @@ class SpectrumModel:
         if isinstance(data, str):
             data = Spectrum.load(data)
 
-        if len(data) > 1:
+        if data is None or len(data) > 1:
             raise ValueError(
                 "Multiple orders detected in data, please use EchelleModel"
             )
@@ -148,11 +148,12 @@ class SpectrumModel:
         self.emulator: Emulator = emulator
         self.data_name = data.name
         self.data = data[0]
+        self.clamp = False
 
         dv = calculate_dv(self.data.wave)
-        self.min_dv_wave = torch.tensor(create_log_lam_grid(
+        self.min_dv_wave = create_log_lam_grid(
             dv, self.emulator.wl.min(), self.emulator.wl.max()
-        )["wl"], dtype = float)
+        )["wl"]
 
         self.bulk_fluxes = resample(
             self.emulator.wl, self.emulator.bulk_fluxes, self.min_dv_wave
@@ -167,7 +168,7 @@ class SpectrumModel:
             params["cheb"] = dict(zip(cheb_idxs, chebs))
         # load rest of params into FlatterDict
         self.params = GroupedParamDict(params)
-        self.frozen = []
+
         self.name = name
         self.norm = norm
 
@@ -192,12 +193,18 @@ class SpectrumModel:
         """
         values = []
         for key in self.emulator.param_names:
+            # if key == 'T':
+            #     values.append(torch.exp(self.params[key]))
+            # else:
             values.append(self.params[key])
         return torch.cat(values)
 
     @grid_params.setter
     def grid_params(self, values):
         for key, value in zip(self.emulator.param_names, values):
+            # if key == 'T':
+            #     self.params[key] = torch.log(value) if isinstance(value, torch.Tensor) else np.log(value)
+            # else:
             self.params[key] = value
 
     @property
@@ -205,14 +212,15 @@ class SpectrumModel:
         """
         numpy.ndarray : The Chebyshev polynomial coefficients used for the background model
         """
-        return np.array(self.params["cheb"].values())
+        print(self['cheb'])
+        return torch.cat(self["cheb"])
 
     @cheb.setter
     def cheb(self, values):
-        if "cheb" in self.frozen:
+        if "cheb" in self.params.frozen():
             return
         for key, value in zip(self.params["cheb"], values):
-            if key not in self.frozen:
+            if key not in self.params.frozen():
                 self.params["cheb"][key] = value
 
     @property
@@ -220,12 +228,11 @@ class SpectrumModel:
         """
         tuple of str : The thawed parameter names
         """
-        keys = self.get_param_dict(flat=True).keys()
-        return tuple(keys)
+        return self.params.keys(deep = True, include_frozen = False)
 
     def __getitem__(self, key):
         if key == "cheb":
-            return list(self.params[key].values())
+            return [x[1] for x in sorted(self.params[key].items(), key = lambda x: x[0])]
         else:
             return self.params[key]
 
@@ -252,7 +259,7 @@ class SpectrumModel:
         else:
             if key == "cheb":
                 cheb_idxs = [str(i) for i in range(1, len(value) + 1)]
-                self.params[key] = dict(zip(cheb_idxs, value))
+                self.params[key].update(dict(zip(cheb_idxs, value)))
             elif key in [*self._PARAMS, *self.emulator.param_names]:
                 self.params[key] = value
             else:
@@ -263,18 +270,10 @@ class SpectrumModel:
             raise KeyError(f"{key} not in params")
         elif key == "global_cov":
             self._glob_cov = None
-            self.frozen = [
-                key for key in self.frozen if not key.startswith("global_cov")
-            ]
         elif key == "local_cov":
             self._loc_cov = None
-            self.frozen = [
-                key for key in self.frozen if not key.startswith("local_cov")
-            ]
 
         del self.params[key]
-        if key in self.frozen:
-            self.frozen.remove(key)
 
     def __call__(self):
         """
@@ -295,17 +294,22 @@ class SpectrumModel:
         if "vz" in self.params:
             wave = doppler_shift(wave, self.params["vz"])
 
-        fluxes = resample(wave, fluxes, torch.tensor(self.data.wave))
+        fluxes = resample(wave, fluxes, self.data.wave)
 
         if "Av" in self.params:
-            fluxes = extinct(torch.tensor(self.data.wave), fluxes, self.params["Av"])
+            fluxes = extinct(self.data.wave, fluxes, self.params["Av"])
 
         if "cheb" in self.params: #TODO: add chebyshev support in pytorch
             # force constant term to be 1 to avoid degeneracy with log_scale
             coeffs = [1, *self.cheb]
             fluxes = chebyshev_correct(self.data.wave, fluxes, coeffs)
 
-        weights, weights_cov = self.emulator(self.grid_params)
+        # print(self.grid_params)
+        grid_params = self.grid_params.clamp(self.emulator.min_params, self.emulator.max_params)
+        # self.grid_params = torch.clamp(self.grid_params, self.emulator.min_params, self.emulator.max_params)
+        # print(self.grid_params)
+        weights, weights_cov = self.emulator(grid_params)
+
 
         # Decompose the bulk_fluxes (see emulator/emulator.py for the ordering)
         flux_mean = fluxes[-2]
@@ -319,13 +323,13 @@ class SpectrumModel:
 
         # optionally scale using absolute flux calibration
         if self.norm: #TODO: Need to implement in pytorch
-            norm = self.emulator.norm_factor(self.grid_params)
+            norm = self.emulator.norm_factor(grid_params)
         else:
             norm = 1
 
         # Renorm to data flux if no "log_scale" provided
         if "log_scale" not in self.params:
-            scale = _get_renorm_factor(torch.tensor(self.data.wave), flux * norm, torch.tensor(self.data.flux))
+            scale = _get_renorm_factor(self.data.wave, flux * norm, self.data.flux)
             self._log_scale = torch.log(scale)
             scale *= norm
             self.log.debug(f"fit scale factor using integrated flux ratio: {scale}")
@@ -345,25 +349,25 @@ class SpectrumModel:
 
         # Global covariance
         if "global_cov" in self.params:
-            if "global_cov" not in self.frozen or self._glob_cov is None:
-                ag = torch.exp(torch.tensor(self.params["global_cov:log_amp"], dtype=torch.float64))
-                lg = torch.exp(torch.tensor(self.params["global_cov:log_ls"], dtype=torch.float64))
-                self._glob_cov = global_covariance_matrix(torch.tensor(self.data.wave), ag, lg)
+            # TODO: If frozen then don't need to re-calculate
+            ag = torch.exp(self.params["global_cov:log_amp"])
+            lg = torch.exp(self.params["global_cov:log_ls"])
+            self._glob_cov = global_covariance_matrix(self.data.wave, ag, lg)
 
         if self._glob_cov is not None:
             cov += self._glob_cov
 
         # Local covariance
         if "local_cov" in self.params:
-            if "local_cov" not in self.frozen or self._loc_cov is None:
-                self._loc_cov = 0
-                for kernel in self.params.as_dict()["local_cov"]: # TODO: Could vecotrize this loop for speed up by rearranging kernel order
-                    mu = kernel["mu"]
-                    amplitude = torch.exp(kernel["log_amp"])
-                    sigma = torch.exp(kernel["log_sigma"])
-                    self._loc_cov += local_covariance_matrix(
-                        self.data.wave, amplitude, mu, sigma
-                    )
+            # TODO: If frozen then don't need to re-calculate
+            self._loc_cov = 0
+            for k, kernel in self.params["local_cov"].items(deep = False): # TODO: Could vecotrize this loop for speed up by rearranging kernel order
+                mu = kernel["mu"]
+                amplitude = torch.exp(kernel["log_amp"])
+                sigma = torch.exp(kernel["log_sigma"])
+                self._loc_cov += local_covariance_matrix(
+                    self.data.wave, amplitude, mu, sigma
+                )
 
         if self._loc_cov is not None:
             cov += self._loc_cov
@@ -389,114 +393,43 @@ class SpectrumModel:
         -------
         float
         """
+
         # Priors
-        prior_lp = 0
+        prior_lp = torch.DoubleTensor([0])
 
         if priors is not None:
             for key, prior in priors.items():
                 if key in self.params:
-                    prior_lp += prior.logpdf(self[key])
+                    if self.clamp and isinstance(prior, torch.distributions.Uniform):
+                        val = self[key].clamp(prior.low, prior.high - 1e-5)
+                        # val = (1 - torch.nn.functional.relu(1 - torch.nn.functional.relu(((self.params[key] - prior.low) / (prior.high - prior.low))))) * (prior.high - prior.low) + prior.low
+                    elif self.clamp and isinstance(prior, torch.distributions.HalfNormal):
+                        # val = torch.nn.functional.relu(self.params[key])
+                        val = self[key].clamp(min = 0, max = None)
+                    else:
+                        val = self.params[key]
+                    self.log.debug(f"Key {key} has value: {val}")
+                    self.log.debug(f"Prior for key: {key} (value {val}) has probability: {prior.log_prob(val)}")
+                    prior_lp += prior.log_prob(val)
 
-        if not np.isfinite(prior_lp):
-            return -np.inf
+        if not torch.isfinite(prior_lp):
+            return -torch.inf
 
+       
         # Likelihood
         flux, cov = self()
-        np.fill_diagonal(cov, cov.diagonal() + 1e-10)
-        factor, flag = cho_factor(cov, overwrite_a=True)
-        logdet = 2 * np.sum(np.log(factor.diagonal()))
+
+        cov.diagonal().add_(1e-10)
+        # print(cov.shape)
+        factor = torch.linalg.cholesky(cov)
+        logdet = 2 * torch.sum(torch.log(factor.diagonal()))
         R = flux - self.data.flux
-        self.residuals.append(R)
-        sqmah = R @ cho_solve((factor, flag), R)
+        self.residuals.append(R.detach().cpu())
+        # print(factor.shape)
+        sqmah = R @ torch.cholesky_solve(R.reshape((-1, 1)), factor)
         self._lnprob = -(logdet + sqmah) / 2
-
+        self.log.debug(f"p1: {self._lnprob.item()} p2: {prior_lp.item()}")
         return self._lnprob + prior_lp
-
-    def get_param_dict(self, flat: bool = False) -> dict:
-        """
-        Gets the dictionary of thawed parameters.
-
-        Parameters
-        ----------
-        flat : bool, optional
-            If True, returns the parameters completely flat. For example,
-            ``['local']['0']['mu']`` would have the key ``'local:0:mu'``.
-            Default is False
-
-        Returns
-        -------
-        dict
-
-        See Also
-        --------
-        :meth:`set_param_dict`
-        """
-        params = FlatterDict()
-        for key, val in self.params.items():
-            if key not in self.frozen:
-                params[key] = val
-
-        output = params if flat else params.as_dict()
-
-        return output
-
-    def set_param_dict(self, params):
-        """
-        Sets the parameters with a dictionary. Note that this should not be used to add
-        new parameters
-
-        Parameters
-        ----------
-        params : dict
-            The new parameters. If a key is present in ``self.frozen`` it will not be
-            changed
-
-        See Also
-        --------
-        :meth:`get_param_dict`
-        """
-        params = FlatterDict(params)
-        for key, val in params.items():
-            if key not in self.frozen:
-                self.params[key] = val
-
-    def get_param_vector(self):
-        """
-        Get a numpy array of the thawed parameters
-
-        Returns
-        -------
-        numpy.ndarray
-
-        See Also
-        --------
-        :meth:`set_param_vector`
-        """
-        return np.array(list(self.get_param_dict(flat=True).values()))
-
-    def set_param_vector(self, params):
-        """
-        Sets the parameters based on the current thawed state. The values will be
-        inserted according to the order of :obj:`SpectrumModel.labels`.
-
-        Parameters
-        ----------
-        params : array_like
-            The parameters to set in the model
-
-        Raises
-        ------
-        ValueError
-            If the `params` do not match the length of the current thawed parameters.
-
-        See Also
-        --------
-        :meth:`get_param_vector`
-        """
-        if len(params) != len(self.labels):
-            raise ValueError("Param Vector does not match length of thawed parameters")
-        param_dict = dict(zip(self.labels, params))
-        self.set_param_dict(param_dict)
 
     def freeze(self, names):
         """
@@ -520,39 +453,17 @@ class SpectrumModel:
         --------
         :meth:`thaw`
         """
-        names = np.atleast_1d(names)
+        names = [names] if isinstance(names, str) else names
         if names[0] == "all":
-            for key in self.labels:
-                if key not in self.frozen:
-                    self.frozen.append(key)
-            if "global_cov" in self.params:
-                self.frozen.append("global_cov")
-            if "local_cov" in self.params:
-                self.frozen.append("local_cov")
-            if "cheb" in self.params:
-                self.frozen.append("cheb")
+            self.params.freeze()
         else:
-            for _name in names:
-                # Avoid kookyness of numpy.str type
-                name = str(_name)
-                if name == "global_cov" or name == "cheb":
-                    self.frozen.append(name)
-                    if name == "global_cov":
-                        self._glob_cov = None
-                    for key in self.params.as_dict()[name].keys():
-                        flat_key = f"{name}:{key}"
-                        if flat_key not in self.frozen:
-                            self.frozen.append(flat_key)
+            self.params.freeze(names)
+            for name in names:
+                if name == "global_cov":
+                    self._glob_cov = None
                 elif name == "local_cov":
-                    self.frozen.append("local_cov")
                     self._loc_cov = None
-                    for i, kern in enumerate(self.params.as_dict()["local_cov"]):
-                        for key in kern.keys():
-                            flat_key = f"local_cov:{i}:{key}"
-                            if flat_key not in self.frozen:
-                                self.frozen.append(flat_key)
-                elif name not in self.frozen and name in self.params:
-                    self.frozen.append(name)
+                
 
     def thaw(self, names):
         """
@@ -574,26 +485,11 @@ class SpectrumModel:
         --------
         :meth:`freeze`
         """
-        names = np.atleast_1d(names)
+        names = [names] if isinstance(names, str) else names
         if names[0] == "all":
-            self.frozen = []
+            self.params.thaw()
         else:
-            for _name in names:
-                # Avoid kookyness of numpy.str type
-                name = str(_name)
-                if name == "global_cov" or name == "cheb":
-                    self.frozen.remove(name)
-                    for key in self.params.as_dict()[name].keys():
-                        flat_key = f"{name}:{key}"
-                        self.frozen.remove(flat_key)
-                elif name == "local_cov":
-                    self.frozen.remove("local_cov")
-                    for i, kern in enumerate(self.params.as_dict()["local_cov"]):
-                        for key in kern.keys():
-                            flat_key = f"local_cov:{i}:{key}"
-                            self.frozen.remove(flat_key)
-                elif name in self.frozen:
-                    self.frozen.remove(name)
+            self.params.thaw(names)
 
     def save(self, filename, metadata=None):
         """
@@ -608,7 +504,7 @@ class SpectrumModel:
             will not be read in when loading models but provides a way of providing
             information in the actual TOML files. Default is None.
         """
-        output = {"parameters": self.params.as_dict(), "frozen": self.frozen}
+        output = {"params": self.params.to_dict_storage()}
         meta = {}
         meta["name"] = self.name
         meta["data"] = self.data_name
@@ -635,8 +531,7 @@ class SpectrumModel:
         """
         with open(filename, "r") as handler:
             data = toml.load(handler)
-        self.params = FlatterDict(data["parameters"])
-        self.frozen = data["frozen"]
+        self.params = GroupedParamDict.from_dict_storage(data["params"])
 
     def train(self, priors: Optional[dict] = None, **kwargs):
         """
@@ -673,33 +568,84 @@ class SpectrumModel:
         if priors is None:
             priors = {}
 
+        # Clamp values in distribtuions to their limits for backprop
+        self.clamp = True
+
         # Check priors for validity
         for key, val in priors.items():
             # Key exists
             if key not in self.params and not key.startswith("cheb"):
                 raise ValueError(f"Invalid priors. {key} not a valid key.")
             # has logpdf method
-            if not callable(getattr(val, "logpdf", None)):
+            if not callable(getattr(val, "log_prob", None)):
                 raise ValueError(
-                    f"Invalid priors. {key} does not have a `logpdf` method"
+                    f"Invalid priors. {key} does not have a `log_prob` method"
                 )
             # Evaluates to a finite number in current state
-            log_prob = val.logpdf(self[key])
-            if not np.isfinite(log_prob):
-                raise RuntimeError(f"{key}'s logpdf evaluated to {log_prob}")
+            log_prob = val.log_prob(self[key])
+            if not torch.isfinite(log_prob):
+                raise RuntimeError(f"{key}'s log_prob evaluated to {log_prob}")
 
-        def nll(P):
-            self.set_param_vector(P)
-            return -self.log_likelihood(priors)
+        self.params.requires_grad_(True)
 
-        p0 = self.get_param_vector()
-        params = {"method": "Nelder-Mead"}
-        params.update(kwargs)
-        soln = minimize(nll, p0, **params)
-        if soln.success:
-            self.set_param_vector(soln.x)
+        model_params = self.params.params()
+        default_kwargs = {"maxiter": 10000, "log_interval": 100, 'best_eps': 1e-5, 'lr': 0.001, 'momentum': 0.9}
+        default_kwargs.update(kwargs)
 
-        return soln
+        optimizer = torch.optim.Adam(model_params, lr = default_kwargs['lr'])#, momentum = default_kwargs['momentum'])
+        # optimizer = torch.optim.SGD(model_params, lr = default_kwargs['lr'], momentum = default_kwargs['momentum'])
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
+
+        best_params = {k: v.detach() for k, v in self.params.items()}
+        early_stopping = 20
+        best_loss = None
+        best_step = 0
+
+        try:
+            for step in range(default_kwargs['maxiter']):
+                optimizer.zero_grad()
+                loss = -self.log_likelihood(priors)
+                if best_loss is None or best_loss - loss > default_kwargs['best_eps']:
+                    best_loss = loss
+                    best_step = step
+                    best_params = {k: v.detach() for k, v in self.params.items()}
+
+                if step % default_kwargs["log_interval"] == 0:
+                    self.log.info(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+                else:
+                    self.log.debug(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+
+                if step - best_step > early_stopping:
+                    self.log.info(f"Early stopping as step: {step} loss: {loss} (best loss: {best_loss} @ step: {best_step})")
+                    break
+                loss.backward()
+                optimizer.step()
+                scheduler.step(loss)
+
+                self.params.requires_grad_(False)
+                if priors is not None:
+                    for key, prior in priors.items():
+                        if key in self.params:
+                            if isinstance(prior, torch.distributions.Uniform):
+                                self[key] = self[key].clamp(prior.low, prior.high)
+                            elif isinstance(prior, torch.distributions.HalfNormal):
+                                self[key] = self[key].clamp(min = 0, max = None)
+                self.grid_params = self.grid_params.clamp(self.emulator.min_params, self.emulator.max_params)
+                self.params.requires_grad_(True)
+        except Exception as e:
+            self.log.error(e)
+            raise e
+
+        self.params.requires_grad_(False)
+        self.params.update(best_params)
+
+        # Clamp values in distribtuions to their limits for backprop
+        self.clamp = False
+        
+        self.log.info("Finished optimizing specturm model parameters")
+        self.log.info(self)
+
+        return self
 
     def plot(self, axes=None, plot_kwargs=None, resid_kwargs=None):
         """
@@ -796,33 +742,34 @@ class SpectrumModel:
         output += "-" * len(self.name) + "\n"
         output += f"Data: {self.data_name}\n"
         output += f"Emulator: {self.emulator.name}\n"
-        output += f"Log Likelihood: {self._lnprob}\n"
+        output += f"Log Likelihood: {self._lnprob.item() if isinstance(self._lnprob, torch.Tensor) else self._lnprob}\n"
         output += "\nParameters\n"
-        for key, value in self.get_param_dict().items():
+        for key, value in self.params.items(False, include_frozen=False):
             if key == "global_cov":
                 output += "  global_cov:\n"
-                for gkey, gval in value.items():
-                    output += f"    {gkey}: {gval}\n"
+                for gkey, gval in value.items(include_frozen=False):
+                    output += f"    {gkey}: {gval.item()}\n"
             elif key == "local_cov":
                 output += "  local_cov:\n"
-                for i, kern in enumerate(value.values()):
+                for i, kern in sorted(self.params[key].items(deep = False), key = lambda x: x[0]):
                     output += f"    {i}: "
-                    for lkey, lval in kern.items():
-                        output += f"{lkey}: {lval}, "
+                    for lkey, lval in kern.items(include_frozen=False):
+                        output += f"{lkey}: {lval.item()}, "
                     # Remove trailing whitespace and comma
                     output = output[:-2]
                     output += "\n"
             elif key == "cheb":
-                output += f"  cheb: {list(value.values())}\n"
+                output += f"  cheb: {[v.item() for v in self[key]]}\n"
             else:
-                output += f"  {key}: {value}\n"
+                output += f"  {key}: {self.params[key].item()}\n"
         if "log_scale" not in self.params:
             self()
             output += f"  log_scale: {self._log_scale} (fit)\n"
-        if len(self.frozen) > 0:
+        frozen_keys = set(self.params.keys(deep = True)) - set(set(self.params.keys(deep = True, include_frozen = False)))
+        if len(frozen_keys) > 0:
             output += "\nFrozen Parameters\n"
-            for key in self.frozen:
+            for key in frozen_keys:
                 if key in ["global_cov", "local_cov"]:
                     continue
-                output += f"  {key}: {self[key]}\n"
+                output += f"  {key}: {self.params[key].item()}\n"
         return output[:-1]  # No trailing newline

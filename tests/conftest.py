@@ -3,6 +3,7 @@ from itertools import product
 
 import numpy as np
 import pytest
+import torch
 
 from Starfish.emulator import Emulator
 from Starfish.grid_tools import (
@@ -81,7 +82,7 @@ def mock_hdf5_interface(mock_hdf5):
 
 @pytest.fixture
 def mock_data(mock_hdf5_interface):
-    wave = mock_hdf5_interface.wl
+    wave = torch.DoubleTensor(mock_hdf5_interface.wl)
     new_wave = create_log_lam_grid(1e3, wave.min(), wave.max())["wl"]
     flux = resample(wave, next(mock_hdf5_interface.fluxes), new_wave)
     yield new_wave, flux
@@ -90,7 +91,7 @@ def mock_data(mock_hdf5_interface):
 @pytest.fixture
 def mock_spectrum(mock_data):
     wave, flux = mock_data
-    sigs = np.random.randn(len(flux))
+    sigs = torch.DoubleTensor(np.random.randn(len(flux)))
     yield Spectrum(waves=wave, fluxes=flux, sigmas=sigs)
 
 

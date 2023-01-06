@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 import scipy.stats as st
 from sklearn.decomposition import PCA
+import torch
 
 from Starfish.emulator._utils import (
     get_w_hat,
@@ -28,18 +29,18 @@ class TestEmulatorUtils:
         pca = PCA(**default_pca_kwargs)
         weights = pca.fit_transform(fluxes)
         eigenspectra = pca.components_
-        yield eigenspectra, fluxes
+        yield torch.DoubleTensor(eigenspectra), torch.DoubleTensor(fluxes)
 
     def test_altered_lambda_xi(self, grid_setup):
         a_p, b_p = get_altered_prior_factors(*grid_setup)
         assert np.isfinite(a_p)
-        assert np.isfinite(b_p)
+        assert torch.isfinite(b_p)
 
     def test_w_hat(self, grid_setup):
         eigs, fluxes = grid_setup
         w_hat = get_w_hat(eigs, fluxes)
         assert len(w_hat) == len(fluxes) * len(eigs)
-        assert np.all(np.isfinite(w_hat))
+        assert torch.all(torch.isfinite(w_hat))
 
     def test_phi_squared(self, grid_setup):
         eigs, fluxes = grid_setup
@@ -47,7 +48,7 @@ class TestEmulatorUtils:
         m = len(eigs)
         phi2 = get_phi_squared(eigs, M)
         assert phi2.shape == (M * m, M * m)
-        assert np.all(np.isfinite(phi2))
+        assert torch.all(torch.isfinite(phi2))
 
     @pytest.mark.parametrize("params", [(1, 0.001), (2, 0.075)])
     def test_gamma_dist(self, params):

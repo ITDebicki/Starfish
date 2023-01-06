@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import torch
 
 from Starfish.emulator import Emulator
 
@@ -14,24 +15,24 @@ class TestEmulator:
         assert np.allclose(emu._grid_sep, [100, 0.5, 0.5])  # issue 134
 
     def test_call(self, mock_emulator):
-        mu, cov = mock_emulator([6020, 4.21, -0.01])
+        mu, cov = mock_emulator(torch.DoubleTensor([6020, 4.21, -0.01]))
         assert mu.shape == (mock_emulator.ncomps,)
         assert cov.shape == (mock_emulator.ncomps, mock_emulator.ncomps)
 
     def test_call_multiple(self, mock_emulator):
-        params = [[6020, 4.21, -0.01], [6104, 4.01, -0.23]]
+        params = torch.DoubleTensor([[6020, 4.21, -0.01], [6104, 4.01, -0.23]])
         n = mock_emulator.ncomps * len(params)
         mu, cov = mock_emulator(params)
         assert mu.shape == (n,)
         assert cov.shape == (n, n)
 
     def test_reinterpret_dims_fails(self, mock_emulator):
-        params = [[6020, 4.21, -0.01], [6104, 4.01, -0.23], [6054, 4.15, -0.16]]
+        params = torch.DoubleTensor([[6020, 4.21, -0.01], [6104, 4.01, -0.23], [6054, 4.15, -0.16]])
         with pytest.raises(ValueError):
             mock_emulator(params, full_cov=True, reinterpret_batch=True)
 
     def test_reinterpret_dims(self, mock_emulator):
-        params = [[6020, 4.21, -0.01], [6104, 4.01, -0.23], [6054, 4.15, -0.16]]
+        params = torch.DoubleTensor([[6020, 4.21, -0.01], [6104, 4.01, -0.23], [6054, 4.15, -0.16]])
         batch_mus, batch_vars = mock_emulator(
             params, full_cov=False, reinterpret_batch=True
         )
@@ -45,44 +46,50 @@ class TestEmulator:
         assert np.allclose(batch_vars, lin_vars)
 
     def test_std(self, mock_emulator):
-        mu, std = mock_emulator([6020, 4.21, -0.01], full_cov=False)
+        mu, std = mock_emulator(torch.DoubleTensor([6020, 4.21, -0.01]), full_cov=False)
         assert mu.shape == (mock_emulator.ncomps,)
         assert std.shape == (mock_emulator.ncomps,)
 
     def test_load_flux(self, mock_emulator):
-        flux = mock_emulator.load_flux([6020, 4.21, -0.01])
-        assert np.all(np.isfinite(flux))
+        flux = mock_emulator.load_flux(torch.DoubleTensor([6020, 4.21, -0.01]))
+        assert torch.all(torch.isfinite(flux))
 
     def test_load_many_fluxes(self, mock_emulator):
-        params = [[6020, 4.21, -0.01], [6104, 4.01, -0.23]]
+        params = torch.DoubleTensor([[6020, 4.21, -0.01], [6104, 4.01, -0.23]])
         flux = mock_emulator.load_flux(params)
         assert len(flux) == len(params)
-        assert np.all(np.isfinite(flux))
+        assert torch.all(torch.isfinite(flux))
 
     def test_load_flux_norm(self, mock_hdf5_interface, mock_emulator):
-        params = mock_hdf5_interface.grid_points[0]
-        grid_flux = mock_hdf5_interface.load_flux(params)
+        params = torch.DoubleTensor(mock_hdf5_interface.grid_points[0])
+        grid_flux = torch.DoubleTensor(mock_hdf5_interface.load_flux(params))
+        torch.manual_seed(123)
         np.random.seed(123)
         emu_flux = mock_emulator.load_flux(params, norm=True)
-        assert np.allclose(emu_flux, grid_flux, rtol=1e-2)
+        assert torch.allclose(emu_flux, grid_flux, rtol=1e-2)
 
         factor = mock_emulator.norm_factor(params)
+        torch.manual_seed(123)
         np.random.seed(123)
         raw_flux = mock_emulator.load_flux(params)
-        assert np.allclose(factor * raw_flux, emu_flux)
+
+        assert torch.allclose(factor * raw_flux, emu_flux)
 
     def test_load_many_fluxes_norm(self, mock_hdf5_interface, mock_emulator):
-        params = mock_hdf5_interface.grid_points[:2]
+        params = torch.DoubleTensor(mock_hdf5_interface.grid_points[:2])
         np.random.seed(123)
+        torch.manual_seed(123)
         emu_flux = mock_emulator.load_flux(params, norm=True)
         factor = mock_emulator.norm_factor(params)
         np.random.seed(123)
+        torch.manual_seed(123)
         raw_flux = mock_emulator.load_flux(params)
-        assert np.allclose(factor[:, np.newaxis] * raw_flux, emu_flux)
+
+        assert torch.allclose(factor.unsqueeze(1) * raw_flux, emu_flux)
 
     def test_warns_before_trained(self, mock_emulator):
         with pytest.warns(UserWarning):
-            mock_emulator([6000, 4.2, 0.0])
+            mock_emulator(torch.DoubleTensor([6000, 4.2, 0.0]))
 
     def test_train(self, mock_emulator):
         initial = mock_emulator.get_param_dict()
@@ -96,13 +103,6 @@ class TestEmulator:
         assert not np.allclose(final_v11, init_v11)
         # assert final != initial
         assert final_ll > init_ll
-
-    def test_get_set_param_vector(self, mock_emulator):
-        P0 = mock_emulator.get_param_vector()
-        P0[0] = 1.0
-        mock_emulator.set_param_vector(P0)
-        P1 = mock_emulator.get_param_vector()
-        assert np.allclose(P0, P1)
 
     def test_log_likelihood(self, mock_emulator):
         ll = mock_emulator.log_likelihood()

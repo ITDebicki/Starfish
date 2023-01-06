@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 import numpy as np
+import torch
 
 plt.style.use("seaborn")
 
@@ -138,7 +139,9 @@ def plot_emulator(emulator):
     mus = []
     covs = []
     for X in Xtest:
-        m, c = emulator(X)
+        m, c = emulator(torch.DoubleTensor(X))
+        m = m.numpy()
+        c = c.numpy()
         mus.append(m)
         covs.append(c)
     mus = np.array(mus)
