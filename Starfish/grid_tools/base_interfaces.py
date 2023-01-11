@@ -296,7 +296,8 @@ class HDF5Creator:
 
         # the raw wl from the spectral library
         self.wl_native = self.grid_interface.wl  # raw grid
-        self.dv_native = calculate_dv(torch.DoubleTensor(self.wl_native))
+        # Firstly convert to little endian
+        self.dv_native = calculate_dv(torch.DoubleTensor(self.wl_native.astype(np.float64)))
 
         self.hdf5 = h5py.File(self.filename, "w")
         self.hdf5.attrs["grid_name"] = grid_interface.name

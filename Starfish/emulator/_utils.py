@@ -34,7 +34,7 @@ def get_phi_squared(eigenspectra, M):
     eigenspectra is a list of 1D numpy arrays.
     """
     m = len(eigenspectra)
-    out = torch.zeros((m * M, m * M), dtype=torch.float64)
+    out = torch.zeros((m * M, m * M), dtype=torch.float64, device = eigenspectra.device)
 
     # Compute all of the dot products pairwise, beforehand
     # TODO: Maybe switch this to calculations in log space

@@ -52,7 +52,7 @@ def ccm89ab_invum(x):
     uv_mask = ~ir_mask & ~opt_mask & (x < 8)
     fuv_mask = ~(ir_mask | opt_mask | uv_mask)
 
-    a, b = torch.zeros_like(x), torch.zeros_like(x)
+    a, b = torch.zeros_like(x, device = x.device), torch.zeros_like(x, device = x.device)
     a[ir_mask], b[ir_mask] = ccm89ab_ir_invum(x[ir_mask])
     a[opt_mask], b[opt_mask] = ccm89ab_opt_invum(x[opt_mask])
     a[uv_mask], b[uv_mask] = ccm89ab_uv_invum(x[uv_mask])
@@ -113,7 +113,7 @@ def ccm89(wave, a_v, r_v, unit='aa', out=None):
     n = wave.shape[0]
 
     if out is None:
-        out = torch.empty(n, dtype=torch.float64)
+        out = torch.empty(n, dtype=torch.float64, device = wave.device)
     else:
         assert out.shape == wave.shape
         assert out.dtype == torch.float64
@@ -218,7 +218,7 @@ def odonnell94(wave, a_v, r_v, unit='aa', out=None):
     n = wave.shape[0]
 
     if out is None:
-        out = torch.empty(n, dtype=torch.float64)
+        out = torch.empty(n, dtype=torch.float64, device = wave.device)
     else:
         assert out.shape == wave.shape
         assert out.dtype == torch.float64
@@ -253,7 +253,7 @@ def calzetti00k_ir_invum(x):
 def calzetti00_invum(x, r_v):
     k = None
     mask = x > 1.5873015873015872
-    k = torch.zeros_like(x)
+    k = torch.zeros_like(x, device = x.device)
     k[mask] = calzetti00k_uv_invum(x[mask])
     k[~mask] = calzetti00k_ir_invum(x[~mask])
 
@@ -294,7 +294,7 @@ def calzetti00(wave, a_v, r_v, unit='aa', out=None):
     n = wave.shape[0]
 
     if out is None:
-        out = torch.empty(n, dtype=torch.float64)
+        out = torch.empty(n, dtype=torch.float64, device = wave.device)
     else:
         assert out.shape == wave.shape
         assert out.dtype == torch.float64

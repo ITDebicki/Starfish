@@ -15,7 +15,7 @@ def preprocess_dict(d):
 
 class GroupedParamDict(MutableMapping):
 
-    def __init__(self, d = None, separator = ':', max_depth = -1, groupTensors = False, error_on_hidden_override = True):
+    def __init__(self, d = None, separator = ':', max_depth = -1, groupTensors = False, error_on_hidden_override = True, device='cpu'):
         self.separator = separator
         self.max_depth = max_depth
         if isinstance(groupTensors, bool):
@@ -36,6 +36,9 @@ class GroupedParamDict(MutableMapping):
         self.clean = self._clean_grouped if self._isGrouped else self._clean_single
         self._values_f = self._values_grouped if self._isGrouped else self._values_single
         self.params = self._params_grouped if self._isGrouped else self._params_single
+        self.to = self._to_grouped if self._isGrouped else self._to_single
+
+        self.device = device
 
         self._frozen = set()
 
@@ -77,7 +80,8 @@ class GroupedParamDict(MutableMapping):
                 self._d[keyParts[0]] = GroupedParamDict(
                                                 separator = self.separator,
                                                 max_depth = self.max_depth - 1,
-                                                groupTensors = self.groupNestedTensors)
+                                                groupTensors = self.groupNestedTensors,
+                                                device = self.device)
             return self._d[keyParts[0]]._set_item_hierchical(keyParts[1:], value)
                 
     def _set_single(self, key, value):
@@ -354,7 +358,8 @@ class GroupedParamDict(MutableMapping):
                 self._d[keys[0]] = GroupedParamDict(
                                                 separator = self.separator,
                                                 max_depth = self.max_depth - 1,
-                                                groupTensors = self.groupNestedTensors)
+                                                groupTensors = self.groupNestedTensors,
+                                                device = self.device)
 
             self._d[keys[0]]._apply_scaler_hierarchical(keys[1:], scaler)
                 
@@ -370,6 +375,21 @@ class GroupedParamDict(MutableMapping):
         else:
             self._d[keys[0]]._remove_scaler_hierarchical(keys[1:])
 
+    def _to_single(self, device):
+        self.device = device
+        for k in self._d.keys():
+            v = self._d[k]
+            if isinstance(v, GroupedParamDict):
+                v.to(device)
+            else:
+                self._d[k] = v.to(device)
+
+    def _to_grouped(self, device):
+        self.device = device
+        self._values = self._values.to(device)
+        for k, v in self._d.items():
+            if isinstance(v, GroupedParamDict):
+                v.to(device)
 
     def requires_grad_(self, requires_grad):
         [p.requires_grad_(requires_grad) for p in self.params()]

@@ -1,8 +1,4 @@
 import extinction  # This may be marked as unused, but is necessary
-import numpy as np
-from numpy.polynomial.chebyshev import chebval
-from scipy.interpolate import InterpolatedUnivariateSpline
-from scipy.special import j1
 
 from Starfish.constants import c_kms
 from Starfish.utils import calculate_dv
@@ -290,7 +286,7 @@ def rescale(flux, scale):
         The rescaled fluxes with the same shape as the input fluxes
     """
     if isinstance(scale, (int, float)):
-        scale = torch.DoubleTensor([scale])
+        scale = torch.DoubleTensor([scale], device = flux.device)
     scale = torch.atleast_1d(scale)
     if len(scale) > 1:
         scale = scale.unsqueeze(1)
@@ -366,5 +362,23 @@ def chebyshev_correct(wave, flux, coeffs):
         )
 
     scale_wave = wave / wave.max()
-    p = chebval(scale_wave, coeffs, tensor=False)
+    p = chebval(scale_wave, coeffs)
     return flux * p
+
+def chebval(x, c):
+
+    if len(c) == 1:
+        c0 = c[0]
+        c1 = 0
+    elif len(c) == 2:
+        c0 = c[0]
+        c1 = c[1]
+    else:
+        x2 = 2*x
+        c0 = c[-2]
+        c1 = c[-1]
+        for i in range(3, len(c) + 1):
+            tmp = c0
+            c0 = c[-i] - c1
+            c1 = tmp + c1*x2
+    return c0 + c1 * x

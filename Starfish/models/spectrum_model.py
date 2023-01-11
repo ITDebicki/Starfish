@@ -133,6 +133,7 @@ class SpectrumModel:
         max_deque_len: int = 100,
         norm=False,
         name: str = "SpectrumModel",
+        device: str = 'cpu',
         **params,
     ):
         if isinstance(emulator, str):
@@ -145,14 +146,20 @@ class SpectrumModel:
                 "Multiple orders detected in data, please use EchelleModel"
             )
 
+       
         self.emulator: Emulator = emulator
         self.data_name = data.name
         self.data = data[0]
         self.clamp = False
 
+        self.device = device
+        self.emulator.to(device)
+        self.data.to(device)
+        
+
         dv = calculate_dv(self.data.wave)
         self.min_dv_wave = create_log_lam_grid(
-            dv, self.emulator.wl.min(), self.emulator.wl.max()
+            dv, self.emulator.wl.min().cpu(), self.emulator.wl.max().cpu()
         )["wl"]
 
         self.bulk_fluxes = resample(
@@ -167,7 +174,8 @@ class SpectrumModel:
             cheb_idxs = [str(i) for i in range(1, len(chebs) + 1)]
             params["cheb"] = dict(zip(cheb_idxs, chebs))
         # load rest of params into FlatterDict
-        self.params = GroupedParamDict(params)
+        self.params = GroupedParamDict(params, device = device)
+        
 
         self.name = name
         self.norm = norm
@@ -183,6 +191,14 @@ class SpectrumModel:
         self._log_scale = params.get("log_scale", None)
 
         self.log = logging.getLogger(self.__class__.__name__)
+
+    def to(self, device):
+        self.device = device
+        self.emulator.to(device)
+        self.data.to(device)
+        self.params.to(device)
+        self.min_dv_wave = self.min_dv_wave.to(device)
+        self.bulk_fluxes = self.bulk_fluxes.to(device)
 
     @property
     def grid_params(self):
@@ -293,7 +309,7 @@ class SpectrumModel:
 
         if "vz" in self.params:
             wave = doppler_shift(wave, self.params["vz"])
-
+            
         fluxes = resample(wave, fluxes, self.data.wave)
 
         if "Av" in self.params:
@@ -305,6 +321,7 @@ class SpectrumModel:
             fluxes = chebyshev_correct(self.data.wave, fluxes, coeffs)
 
         # print(self.grid_params)
+        
         grid_params = self.grid_params.clamp(self.emulator.min_params, self.emulator.max_params)
         # self.grid_params = torch.clamp(self.grid_params, self.emulator.min_params, self.emulator.max_params)
         # print(self.grid_params)
@@ -395,7 +412,7 @@ class SpectrumModel:
         """
 
         # Priors
-        prior_lp = torch.DoubleTensor([0])
+        prior_lp = torch.tensor([0], dtype = torch.float64, device = self.device)
 
         if priors is not None:
             for key, prior in priors.items():

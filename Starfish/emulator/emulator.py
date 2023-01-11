@@ -81,16 +81,17 @@ class Emulator:
         variances: Optional[NDArray[float]] = None,
         lengthscales: Optional[NDArray[float]] = None,
         name: Optional[str] = None,
+        device: str = 'cpu'
     ):
         self.log = logging.getLogger(self.__class__.__name__)
-        self.grid_points = torch.DoubleTensor(grid_points)
+        self.grid_points = torch.DoubleTensor(grid_points, device = device)
         self.param_names = param_names
-        self.wl = torch.DoubleTensor(wavelength)
-        self.weights = torch.DoubleTensor(weights)
-        self.eigenspectra = torch.DoubleTensor(eigenspectra)
-        self.flux_mean = torch.DoubleTensor(flux_mean)
-        self.flux_std = torch.DoubleTensor(flux_std)
-        self.factors = torch.DoubleTensor(factors)
+        self.wl = torch.DoubleTensor(wavelength, device = device)
+        self.weights = torch.DoubleTensor(weights, device = device)
+        self.eigenspectra = torch.DoubleTensor(eigenspectra, device = device)
+        self.flux_mean = torch.DoubleTensor(flux_mean, device = device)
+        self.flux_std = torch.DoubleTensor(flux_std, device = device)
+        self.factors = torch.DoubleTensor(factors, device = device)
         self.factor_interpolator = LinearNDInterpolator(
             grid_points, factors, rescale=True
         )
@@ -99,13 +100,13 @@ class Emulator:
         self.dv = calculate_dv(self.wl)
         self.ncomps = eigenspectra.shape[0]
 
-        self.hyperparams = GroupedParamDict(groupTensors=[False, True], max_depth=1)
+        self.hyperparams = GroupedParamDict(groupTensors=[False, True], max_depth=1, device = device)
         self.name = name
 
         self.lambda_xi = lambda_xi
 
         self.variances = torch.DoubleTensor(
-            variances if variances is not None else 1e4 * np.ones(self.ncomps)
+            variances if variances is not None else 1e4 * np.ones(self.ncomps), device = device
         )
 
         unique = [sorted(np.unique(param_set)) for param_set in self.grid_points.T]
@@ -114,22 +115,24 @@ class Emulator:
         if lengthscales is None:
             lengthscales = np.tile(3 * self._grid_sep, (self.ncomps, 1))
 
-        self.lengthscales = torch.DoubleTensor(lengthscales)
+        self.lengthscales = torch.DoubleTensor(lengthscales, device = device)
 
         # Determine the minimum and maximum bounds of the grid
         self.min_params = self.grid_points.min(axis=0).values
         self.max_params = self.grid_points.max(axis=0).values
 
         # TODO find better variable names for the following
-        self.iPhiPhi = torch.DoubleTensor(torch.linalg.inv(
-            get_phi_squared(self.eigenspectra, self.grid_points.shape[0])
-        ))
+        self.iPhiPhi = get_phi_squared(self.eigenspectra, self.grid_points.shape[0])
         self.v11 = self.iPhiPhi / self.lambda_xi + batch_kernel(
             self.grid_points, self.grid_points, self.variances, self.lengthscales
         )
-        self.w_hat = torch.DoubleTensor(w_hat)
+        if isinstance(w_hat, torch.Tensor):
+            self.w_hat = w_hat.to(device)
+        else:
+            self.w_hat = torch.DoubleTensor(w_hat, device = device)
 
         self._trained = False
+        self.device = device
 
     @property
     def lambda_xi(self) -> float:
@@ -155,8 +158,12 @@ class Emulator:
 
     @variances.setter
     def variances(self, values: NDArray[float]):
-        for i, value in enumerate(values):
-            self.hyperparams[f"log_variance:{i}"] = np.log(value)
+        if isinstance(values, torch.Tensor):
+            for i, value in enumerate(values):
+                self.hyperparams[f"log_variance:{i}"] = torch.log(value)
+        else:
+            for i, value in enumerate(values):
+                self.hyperparams[f"log_variance:{i}"] = np.log(value)
 
     @property
     def lengthscales(self) -> NDArray[float]:
@@ -169,9 +176,14 @@ class Emulator:
 
     @lengthscales.setter
     def lengthscales(self, values: NDArray[float]):
-        for i, value in enumerate(values):
-            for j, ls in enumerate(value):
-                self.hyperparams[f"log_lengthscale:{i}:{j}"] = np.log(ls)
+        if isinstance(values, torch.Tensor):
+            for i, value in enumerate(values):
+                for j, ls in enumerate(value):
+                    self.hyperparams[f"log_lengthscale:{i}:{j}"] = torch.log(ls)
+        else:
+            for i, value in enumerate(values):
+                for j, ls in enumerate(value):
+                    self.hyperparams[f"log_lengthscale:{i}:{j}"] = np.log(ls)
 
     def __getitem__(self, key):
         return self.hyperparams[key]
@@ -503,53 +515,55 @@ class Emulator:
         lengthscale_params = self.hyperparams['log_lengthscale'].values()[0]
         
 
-        default_kwargs = {"maxiter": 10000, "log_interval": 100, 'best_eps': 1e-5, 'lr': 0.001, 'momentum': 0.9}
+        default_kwargs = {"maxiter": 10000, "log_interval": 100, 'best_eps': 1e-5, 'lr': 0.001, 'momentum': 0.9, 'early_stopping': 20}
         default_kwargs.update(opt_kwargs)
 
         optimizer = torch.optim.SGD(params, lr = default_kwargs['lr'], momentum = default_kwargs['momentum'])
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
 
-        # best_params = {k: v.detach() for k, v in self.hyperparams.items()}
-        early_stopping = 20
+        best_params = {k: v.detach() for k, v in self.hyperparams.items()}
+        early_stopping = default_kwargs['early_stopping']
         best_loss = None
         best_step = 0
-
-        for step in range(default_kwargs['maxiter']):
-            optimizer.zero_grad()
-
-            variances = torch.exp(variance_params)
-            lengthscales = torch.exp(lengthscale_params).reshape(self.ncomps, -1)
-            lambda_xi = torch.exp(self.hyperparams['log_lambda_xi'])
+        try:
+            for step in range(default_kwargs['maxiter']):
             
-            self.v11 = self.iPhiPhi / lambda_xi + batch_kernel(
-                self.grid_points, self.grid_points, variances, lengthscales
-            )
-            loss = -self.log_likelihood()
-            
-            if best_loss is None or best_loss - loss > default_kwargs['best_eps'] :
-                best_loss = loss
-                best_step = step
-                # best_params = {k: v.detach() for k, v in self.hyperparams.items()}
+                optimizer.zero_grad()
 
-            if step % default_kwargs["log_interval"] == 0:
-                self.log.info(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
-            else:
-                self.log.debug(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+                variances = torch.exp(variance_params)
+                lengthscales = torch.exp(lengthscale_params).reshape(self.ncomps, -1)
+                lambda_xi = torch.exp(self.hyperparams['log_lambda_xi'])
+                self.v11 = self.iPhiPhi / lambda_xi + batch_kernel(
+                    self.grid_points, self.grid_points, variances, lengthscales
+                )
+                loss = -self.log_likelihood()
+                
+                if best_loss is None or best_loss - loss > default_kwargs['best_eps'] :
+                    best_loss = loss
+                    best_step = step
+                    best_params = {k: v.detach() for k, v in self.hyperparams.items()}
 
-            if step - best_step > early_stopping:
-                self.log.info(f"Early stopping as step: {step} loss: {loss} (best loss: {best_loss} @ step: {best_step})")
-                break
-            loss.backward()
-            optimizer.step()
-            scheduler.step(loss)
+                if step % default_kwargs["log_interval"] == 0:
+                    self.log.info(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+                else:
+                    self.log.debug(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+
+                if step - best_step > early_stopping:
+                    self.log.info(f"Early stopping as step: {step} loss: {loss} (best loss: {best_loss} @ step: {best_step})")
+                    break
+                loss.backward()
+                optimizer.step()
+                scheduler.step(loss)
+        except RuntimeError as e:
+            self.log.warn(f"Encountered error {e}. Resetting to best known parameters")
         
         self.log.info("Finished optimizing emulator hyperparameters")
         self.hyperparams.requires_grad_(False)
         self._trained = True
         self.log.info(self)
-        # self.hyperparams._values = best_params.detach()
-        # for k, v in best_params.items():
-        #     self.hyperparams[k] = v
+        
+        for k, v in best_params.items():
+            self.hyperparams[k] = v
         # variances = torch.exp(variance_params).detach()
         # lengthscales = torch.exp(lengthscale_params).reshape(self.ncomps, -1).detach()
         variance_params = self.hyperparams['log_variance'].values()[0]
@@ -645,3 +659,25 @@ class Emulator:
         )
         output += f"\nLog Likelihood: {self.log_likelihood().item():.2f}\n"
         return output
+
+    def to(self, device):
+        self.device = device
+        self.hyperparams.to(device)
+
+        self.grid_points = self.grid_points.to(device)
+
+        self.wl = self.wl.to(device)
+        self.weights = self.weights.to(device)
+        self.eigenspectra = self.eigenspectra.to(device)
+        self.flux_mean = self.flux_mean.to(device)
+        self.flux_std = self.flux_std.to(device)
+        self.factors = self.factors.to(device)
+
+        # Determine the minimum and maximum bounds of the grid
+        self.min_params = self.min_params.to(device)
+        self.max_params = self.max_params.to(device)
+
+        # TODO find better variable names for the following
+        self.iPhiPhi = self.iPhiPhi.to(device)
+        self.v11 = self.v11.to(device)
+        self.w_hat = self.w_hat.to(device)

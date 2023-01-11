@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from nptyping import NDArray
 from typing import Optional
 import torch
+import pandas as pd
 
 
 @dataclass
@@ -31,12 +32,20 @@ class Order:
     _flux: torch.DoubleTensor
     _sigma: Optional[torch.DoubleTensor] = None
     mask: Optional[torch.DoubleTensor] = None
+    device: str = 'cpu'
 
     def __post_init__(self):
         if self._sigma is None:
             self._sigma = torch.zeros_like(self._flux)
         if self.mask is None:
             self.mask = torch.ones_like(self._wave, dtype=bool)
+
+    def to(self, device):
+        self.device = device
+        self._wave = self._wave.to(device)
+        self._sigma = self._sigma.to(device)
+        self.mask = self.mask.to(device)
+        self._flux = self._flux.to(device)
 
     @property
     def wave(self):
@@ -94,7 +103,8 @@ class Spectrum:
         The name of the spectrum
     """
 
-    def __init__(self, waves, fluxes, sigmas=None, masks=None, name="Spectrum"):
+    def __init__(self, waves, fluxes, sigmas=None, masks=None, name="Spectrum", device = 'cpu'):
+        
         self._waves = torch.atleast_2d(waves)
         self._fluxes = torch.atleast_2d(fluxes)
 
@@ -111,10 +121,16 @@ class Spectrum:
         assert self._sigmas.shape == self._waves.shape, "sigma array incompatible shape."
         assert self.masks.shape == self._waves.shape, "mask array incompatible shape."
 
+        self.device = device
+        self._waves = self._waves.to(device)
+        self._sigmas = self._sigmas.to(device)
+        self.masks = self.masks.to(device)
+        self._fluxes = self._fluxes.to(device)
+
         self.name = name
 
     def __getitem__(self, index: int):
-        return Order(self._waves[index], self._fluxes[index], self._sigmas[index], self.masks[index])
+        return Order(self._waves[index], self._fluxes[index], self._sigmas[index], self.masks[index], self.device)
 
     def __setitem__(self, index: int, order: Order):
         if len(order) != self._waves.shape[1]:
@@ -137,6 +153,13 @@ class Spectrum:
             return self[n]
         else:
             raise StopIteration
+
+    def to(self, device):
+        self.device = device
+        self._waves = self._waves.to(device)
+        self._sigmas = self._sigmas.to(device)
+        self.masks = self.masks.to(device)
+        self._fluxes = self._fluxes.to(device)
 
     # Masked properties
     @property
@@ -193,29 +216,106 @@ class Spectrum:
         self.masks = self.masks.reshape(shape)
 
     @classmethod
-    def load(cls, filename):
+    def load(cls, filename: str, file_type: Optional[str] = None, convert = None, name = None, spectrum_filter = None, **kwargs):
         """
-        Load a spectrum from an hdf5 file
+        Load a spectrum from a file
 
         Parameters
         ----------
         filename : str or path-like
-            The path to the HDF5 file.
+            The path to the HDF5, tt or csv file.
+        fil
 
         See Also
         --------
         :meth:`save`
         """
-        with h5py.File(filename, "r") as base:
-            if "name" in base.attrs:
-                name = base.attrs["name"]
+        file_handlers = {
+            'csv': cls.load_pd,
+            'tsv': cls.load_pd,
+            'hdf5': cls.load_hdf5
+        }
+        # Determine file type
+        if file_type is None:
+            file_type_mapping = {
+                "txt": "csv",
+                "csv": "csv",
+                "tsv": "tsv",
+                "hdf5": "hdf5"
+            }
+            parts = filename.rsplit(".", 1)
+            ext = parts[-1]
+            if ext.lower() in file_type_mapping:
+                file_type = file_type_mapping[ext]
             else:
-                name = None
+                raise ValueError(f"Unknown file type {ext}. Currently supported file types are: txt, csv, tsv & hdf5")
+        
+        if file_type not in file_handlers:
+            raise ValueError(f"Unsupported file type {file_type}")
+        
+        waves, fluxes, sigmas, masks, name = file_handlers[file_type](filename, file_type, name, spectrum_filter = spectrum_filter, **kwargs)
+
+        if waves is None or fluxes is None:
+            raise ValueError("Waves and fluxes must be defined.")
+
+        # Determine if need to convert units
+        if convert is not None:
+            # Target units are:
+            # waves: Angstroms
+            # fluxes: erg/cm^2/s/cm
+            # sigmas: erg/cm^2/s/cm
+            if isinstance(convert, dict):
+                if "flux" in convert:
+                    fluxes = convert['flux'](fluxes)
+                    if sigmas is not None:
+                        sigmas = convert['flux'](sigmas)
+                
+                if 'waves' in convert:
+                    waves = convert['waves'](waves)
+            else:
+                if len(convert) == 1:
+                    waves = convert[0](waves)
+                elif len(convert) >= 2:
+                    if convert[0] is not None:
+                        waves = convert[0](waves)
+
+                    if convert[1] is not None:
+                        fluxes = convert[1](fluxes)
+                        if sigmas is not None:
+                            sigmas = convert[1](sigmas)
+
+
+        return cls(waves, fluxes, sigmas, masks, name=name)
+
+    @staticmethod
+    def load_pd(filename, file_type, name, spectrum_filter = None, **kwargs):
+        df = pd.read_csv(filename, delimiter='\t' if file_type == 'tsv' else ',', **kwargs)
+        df = df.sort_values('waves')
+        df = spectrum_filter(df) if spectrum_filter else df
+        waves = torch.DoubleTensor(df["waves"].values) if "waves" in df else None
+        fluxes = torch.DoubleTensor(df["fluxes"].values) if "fluxes" in df else None
+        sigmas = torch.DoubleTensor(df["sigmas"].values) if "sigmas" in df else None
+        masks = torch.BoolTensor(df["masks"].values) if "masks" in df else None
+
+        if masks is None and fluxes is not None:
+            masks = ~torch.isnan(fluxes)
+            if sigmas is not None:
+                masks = masks & ~torch.isnan(sigmas)
+
+        return waves, fluxes, sigmas, masks, name
+
+
+    @staticmethod
+    def load_hdf5(filename: str, file_type, name, spectrum_filter = None, **kwargs):
+        with h5py.File(filename, "r") as base:
+            if name is None and "name" in base.attrs:
+                name = base.attrs["name"]
             waves = torch.DoubleTensor(base["waves"][:])
             fluxes = torch.DoubleTensor(base["fluxes"][:])
             sigmas = torch.DoubleTensor(base["sigmas"][:])
             masks = torch.BoolTensor(base["masks"][:])
-        return cls(waves, fluxes, sigmas, masks, name=name)
+        
+        return waves, fluxes, sigmas, masks, name
 
     def save(self, filename):
         """

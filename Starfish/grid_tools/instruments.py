@@ -123,3 +123,108 @@ class WIYN_Hydra(Instrument):
 
     def __init__(self, name="WIYN_Hydra", FWHM=300.0, wl_range=(5500, 10500)):
         super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G140M_F070LP(Instrument):
+    """JWST NIRSpec G140M/F070LP """
+    def __init__(self, name="NIRSpec_G140M_F070LP", FWHM=300.0, wl_range=(9000, 12700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G140M_F100LP(Instrument):
+    """JWST NIRSpec G140M/F100LP """
+    def __init__(self, name="NIRSpec_G140M_F100LP", FWHM=300.0, wl_range=(9700, 18900)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G235M_F170LP(Instrument):
+    """JWST NIRSpec G235M/F170LP """
+    def __init__(self, name="NIRSpec_G235M_F170LP", FWHM=300.0, wl_range=(16600, 31700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G395M_F290LP(Instrument):
+    """JWST NIRSpec G395M/F290LP """
+    def __init__(self, name="NIRSpec_G395M_F290LP", FWHM=300.0, wl_range=(28700, 52700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G140H_F070LP(Instrument):
+    """JWST NIRSpec G140H/F070LP """
+    def __init__(self, name="NIRSpec_G140M_F070LP", FWHM=111.0, wl_range=(9500, 12700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G140H_F100LP(Instrument):
+    """JWST NIRSpec G140H/F100LP """
+    def __init__(self, name="NIRSpec_G140H_F100LP", FWHM=111.0, wl_range=(9700, 18900)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G235H_F170LP(Instrument):
+    """JWST NIRSpec G235H/F170LP """
+    def __init__(self, name="NIRSpec_G235H_F170LP", FWHM=111.0, wl_range=(16600, 31700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_G395H_F290LP(Instrument):
+    """JWST NIRSpec G395H/F290LP """
+    def __init__(self, name="NIRSpec_G395H_F290LP", FWHM=111.0, wl_range=(28700, 52700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class NIRSpec_PRISM(Instrument):
+    """JWST NIRSpec PRISM/CLEAR """
+    def __init__(self, name="NIRSpec_PRISM", FWHM=3000.0, wl_range=(6000, 53000)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_1A(Instrument):
+    """MIRI MRS 1A"""
+    def __init__(self, name = "MIRI_MRS_1A", FWHM=90.4, wl_range=(49000, 57400)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_1B(Instrument):
+    """MIRI MRS 1B"""
+    def __init__(self, name = "MIRI_MRS_1B", FWHM=94.0, wl_range=(56600, 66300)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_1C(Instrument):
+    """MIRI MRS 1C"""
+    def __init__(self, name = "MIRI_MRS_1C", FWHM=96.8, wl_range=(65300, 76500)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_2A(Instrument):
+    """MIRI MRS 2A"""
+    def __init__(self, name = "MIRI_MRS_2A", FWHM=100.3, wl_range=(75100, 87700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_2B(Instrument):
+    """MIRI MRS 2B"""
+    def __init__(self, name = "MIRI_MRS_2B", FWHM=109.1, wl_range=(86700, 101300)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_2C(Instrument):
+    """MIRI MRS 2C"""
+    def __init__(self, name = "MIRI_MRS_2C", FWHM=104.9, wl_range=(100200, 117000)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_3A(Instrument):
+    """MIRI MRS 3A"""
+    def __init__(self, name = "MIRI_MRS_3A", FWHM=118.6, wl_range=(115500, 134700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_3B(Instrument):
+    """MIRI MRS 3B"""
+    def __init__(self, name = "MIRI_MRS_3B", FWHM=167.6, wl_range=(133400, 155700)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_3C(Instrument):
+    """MIRI MRS 3C"""
+    def __init__(self, name = "MIRI_MRS_3C", FWHM=151.5, wl_range=(154100, 179800)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_4A(Instrument):
+    """MIRI MRS 4A"""
+    def __init__(self, name = "MIRI_MRS_4A", FWHM=205.5, wl_range=(177000, 209500)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_4B(Instrument):
+    """MIRI MRS 4B"""
+    def __init__(self, name = "MIRI_MRS_4B", FWHM=178.6, wl_range=(2106900, 244800)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
+
+class MIRI_MRS_4B(Instrument):
+    """MIRI MRS 4B"""
+    def __init__(self, name = "MIRI_MRS_4B", FWHM=184.1, wl_range=(241900, 279000)):
+        super().__init__(name=name, FWHM=FWHM, wl_range=wl_range)
