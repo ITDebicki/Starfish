@@ -326,7 +326,7 @@ class HDF5Creator:
             wl_min, wl_max = 0, np.inf
         else:
             wl_min, wl_max = wl_range
-        buffer = 50  # [AA]
+        buffer = 100  # [AA]
         wl_min -= buffer
         wl_max += buffer
 
@@ -335,8 +335,11 @@ class HDF5Creator:
         # Instead, let's choose the maximum limit of the synthetic grid?
         if self.instrument is not None:
             inst_min, inst_max = self.instrument.wl_range
+            inst_min -= buffer
+            inst_max += buffer
         else:
             inst_min, inst_max = 0, np.inf
+        
         imposed_min = np.max([self.wl_native[0], inst_min])
         imposed_max = np.min([self.wl_native[-1], inst_max])
         if wl_min < imposed_min:
@@ -431,7 +434,8 @@ class HDF5Creator:
             # Load and process the flux
             try:
                 flux, header = self.grid_interface.load_flux(param, header=True)
-            except ValueError:
+            except ValueError as e:
+                self.log.warning(e)
                 self.log.warning(
                     "Deleting {} from all params, does not exist.".format(param)
                 )

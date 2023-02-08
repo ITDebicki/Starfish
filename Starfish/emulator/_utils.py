@@ -1,14 +1,14 @@
 import logging
 
+from typing import Tuple
 import numpy as np
 import torch
-import scipy.linalg as sl
 from scipy.special import loggamma
 
 log = logging.getLogger(__name__)
 
 
-def get_w_hat(eigenspectra, fluxes):
+def get_w_hat(eigenspectra:torch.Tensor, fluxes:torch.Tensor) -> torch.Tensor:
     """
     Since we will overflow memory if we actually calculate Phi, we have to
     determine w_hat in a memory-efficient manner.
@@ -27,14 +27,14 @@ def get_w_hat(eigenspectra, fluxes):
     return torch.cholesky_solve(out.unsqueeze(1).double(), fac.double()).squeeze()
 
 
-def get_phi_squared(eigenspectra, M):
+def get_phi_squared(eigenspectra: torch.Tensor, M: int) -> torch.Tensor:
     """
     Compute Phi.T.dot(Phi) in a memory efficient manner.
 
     eigenspectra is a list of 1D numpy arrays.
     """
     m = len(eigenspectra)
-    out = torch.zeros((m * M, m * M), dtype=torch.float64, device = eigenspectra.device)
+    out = torch.zeros((m * M, m * M), dtype=eigenspectra.dtype, device = eigenspectra.device)
 
     # Compute all of the dot products pairwise, beforehand
     # TODO: Maybe switch this to calculations in log space
@@ -53,7 +53,7 @@ def get_phi_squared(eigenspectra, M):
     return out
 
 
-def get_altered_prior_factors(eigenspectra, fluxes):
+def get_altered_prior_factors(eigenspectra: torch.Tensor, fluxes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Compute the altered priors for the :math:`\\lambda_\\xi` term as in eqns. A24 and
     A25 of Czekala et al. 2015.
@@ -72,7 +72,7 @@ def get_altered_prior_factors(eigenspectra, fluxes):
     M, npix = fluxes.shape
     m = len(eigenspectra)
 
-    Phi_w_hat = torch.empty((M * npix, 1), dtype = torch.float64)
+    Phi_w_hat = torch.empty((M * npix, 1), dtype = eigenspectra.dtype, device = eigenspectra.device)
     for i in range(M):
         loss_per_M = torch.zeros(npix)
         for j in range(m):

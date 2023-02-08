@@ -1,9 +1,15 @@
 import os
 import logging
-import tqdm
+from tqdm import tqdm
 from urllib.request import urlretrieve, URLError
 import multiprocessing as mp
 import itertools
+import requests
+import tarfile
+import pathlib
+import glob
+import gzip
+import shutil
 
 import numpy as np
 
@@ -121,7 +127,7 @@ def download_PHOENIX_models(path, ranges=None, parameters=None):
         if np.all(p >= min_params) and np.all(p <= max_params):
             params.append(p)
 
-    pbar = tqdm.tqdm(params)
+    pbar = tqdm(params)
     for p in pbar:
         # Skip irregularities from grid
         try:
@@ -150,7 +156,6 @@ def download_PHOENIX_models(path, ranges=None, parameters=None):
                 log.warning(
                     f"Parameters {p} not found. Double check they are on PHOENIX grid"
                 )
-
 
 def chunk_list(mylist, n=mp.cpu_count()):
     """
@@ -346,3 +351,47 @@ def idl_float(idl_num: str) -> float:
     """
     idl_str = idl_num.lower()
     return float(idl_str.replace("d", "e"))
+
+AVAILABLE_SONORA_BOBCAT_MODELS = [
+    "spectra_m+0.0",
+    "spectra_m-0.5",
+    "spectra_m+0.5",
+    "spectra_m+0.0_co0.5_g1000nc",
+    "spectra_m+0.0_co1.5_g1000nc"
+]
+
+SONORA_BOBCAT_URL_FORMAT = "https://zenodo.org/record/5063476/files/{0}.tar.gz?download=1"
+
+def download_sonora_bobcat_models(path, grids = AVAILABLE_SONORA_BOBCAT_MODELS):
+    if isinstance(grids, str):
+        grids = [grids]
+
+    if not os.path.exists(path):
+        os.makedirs(path)
+    for grid in grids:
+        if not os.path.exists(os.path.join(path, grid)):
+            if not os.path.exists(os.path.join(path,f"{grid}.tar.gz")):
+                response = requests.get(SONORA_BOBCAT_URL_FORMAT.format(grid), stream=True)
+                total_size_in_bytes= int(response.headers.get('content-length', 0))
+                block_size = 1024 #1 Kibibyte
+                with tqdm(total=total_size_in_bytes, unit='iB', unit_scale=True, desc=f"Downloading {grid}") as progress_bar:
+
+                    with open(path + f"/{grid}.tar.gz", 'wb') as file:
+                        for data in response.iter_content(block_size):
+                            progress_bar.update(len(data))
+                            file.write(data)
+                
+            with tarfile.open(os.path.join(path,f"{grid}.tar.gz")) as zip_ref:
+                zip_ref.extractall(os.path.join(path, grid))
+            if os.path.exists(os.path.join(path, grid, 'spectra')):
+                for fpath in glob.glob(os.path.join(path, grid, 'spectra', '*')):
+                    p = pathlib.Path(fpath).absolute()
+                    parent_dir = p.parents[1]
+                    p.rename(parent_dir / p.name)
+                os.rmdir(os.path.join(path, grid, 'spectra'))
+            # Unzip any .gz files
+            for fpath in glob.glob(os.path.join(path, grid, '*.gz')):
+                with gzip.open(fpath, 'rb') as f_in:
+                    with open(fpath[:-3], 'wb') as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                os.remove(fpath)

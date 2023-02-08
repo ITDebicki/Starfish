@@ -1,11 +1,8 @@
 from collections import deque
-from typing import Union, Sequence, Optional, List
+from typing import Union, Sequence, Optional, List, Tuple
 import logging
 
-from flatdict import FlatterDict
 import numpy as np
-from scipy.linalg import cho_factor, cho_solve
-from scipy.optimize import minimize
 import toml
 import torch
 from Starfish.param_dict import GroupedParamDict
@@ -23,7 +20,9 @@ from Starfish.transforms import (
 )
 from Starfish.utils import calculate_dv, create_log_lam_grid
 from .kernels import global_covariance_matrix, local_covariance_matrix
-
+import pickle
+import warnings
+import os
 
 class SpectrumModel:
     """
@@ -203,30 +202,24 @@ class SpectrumModel:
     @property
     def grid_params(self):
         """
-        numpy.ndarray : The parameters used for the spectral emulator.
+        torch.Tensor : The parameters used for the spectral emulator.
 
         :setter: Sets the values in the order of ``Emulator.param_names``
         """
         values = []
         for key in self.emulator.param_names:
-            # if key == 'T':
-            #     values.append(torch.exp(self.params[key]))
-            # else:
             values.append(self.params[key])
         return torch.cat(values)
 
     @grid_params.setter
     def grid_params(self, values):
         for key, value in zip(self.emulator.param_names, values):
-            # if key == 'T':
-            #     self.params[key] = torch.log(value) if isinstance(value, torch.Tensor) else np.log(value)
-            # else:
             self.params[key] = value
 
     @property
     def cheb(self):
         """
-        numpy.ndarray : The Chebyshev polynomial coefficients used for the background model
+        torch.Tensor : The Chebyshev polynomial coefficients used for the background model
         """
         print(self['cheb'])
         return torch.cat(self["cheb"])
@@ -240,7 +233,7 @@ class SpectrumModel:
                 self.params["cheb"][key] = value
 
     @property
-    def labels(self):
+    def labels(self) -> Tuple[str]:
         """
         tuple of str : The thawed parameter names
         """
@@ -320,7 +313,6 @@ class SpectrumModel:
             coeffs = [1, *self.cheb]
             fluxes = chebyshev_correct(self.data.wave, fluxes, coeffs)
 
-        # print(self.grid_params)
         
         grid_params = self.grid_params.clamp(self.emulator.min_params, self.emulator.max_params)
         # self.grid_params = torch.clamp(self.grid_params, self.emulator.min_params, self.emulator.max_params)
@@ -399,8 +391,8 @@ class SpectrumModel:
         ----------
         priors : dict, optional
             If provided, will use these priors in the MLE. Should contain keys that
-            match the model's keys and values that have a `logpdf` method that takes
-            one value (like ``scipy.stats`` distributions). Default is None.
+            match the model's keys and values that have a `log_prob` method that takes
+            one value (like ``torch.distributions`` distributions). Default is None.
 
         Warning
         -------
@@ -550,26 +542,41 @@ class SpectrumModel:
             data = toml.load(handler)
         self.params = GroupedParamDict.from_dict_storage(data["params"])
 
-    def train(self, priors: Optional[dict] = None, **kwargs):
+    def train(self, priors: Optional[dict] = None, optimizer_cls: torch.optim.Optimizer = torch.optim.Adam, maxiter:int = 10000, log_interval:int = 100, best_eps:float = 1e-3, early_stopping:int = 20, checkpoint_path: Optional[str] = None, checkpoint_interval: int = -1, from_checkpoint: Optional[str] = None, **kwargs):
         """
         Given a :class:`SpectrumModel` and a dictionary of priors, will perform
-        maximum-likelihood estimation (MLE). This will use ``scipy.optimize.minimize`` to
+        maximum-likelihood estimation (MLE). By default, this will use the Adam optimizer
+        from pytorch together with a ReduceLROnPlateau scheduler to
         find the maximum a-posteriori (MAP) estimate of the current model state. Note
         that this alters the state of the model. This means that you can run this
-        method multiple times until the optimization succeeds. By default, we use the
-        "Nelder-Mead" method in `minimize` to avoid approximating any derivatives.
+        method multiple times until the optimization succeeds.
 
         Parameters
         ----------
         priors : dict, optional
             Priors to pass to :meth:`log_likelihood`
+        optimizer_cls: torch.optim.Optimizer, optional
+            The optimizer to use. Defaults to Adam
+        maxiter: int, optional
+            The maximum number of steps the optimizer will take. Defaults to 10000
+        log_interval: int, optional
+            After how many steps should an info log with current loss be printed to the log. Defaults to 100
+        best_eps: float, optional
+            How small of a difference in log likelihood should be considered equal for early stopping purposes. Defaults to 1e-5
+        early_stopping: int, optional
+            After how many steps of no improvement should the optimization be stopped. Defaults to 20
+        checkpoint_path: Optional[str]
+            Where to store the checkpoints during training. Defaults to None (No checkpoints stored)
+        checkpoint_interval: int
+            How often to store checkpoints during training. Defaults to -1 (No checkpoints stored)
+        from_checkpoint: Optional[str]
+            Which hceckpoint file to load to resume training. Defaults to None (Don't resume)
         **kwargs : dict, optional
-            These keyword arguments will be passed to `scipy.optimize.minimize`
+            These keyword arguments will be passed to the optimizer.
 
         Returns
         -------
-        soln : `scipy.optimize.minimize_result`
-            The output of the minimization.
+        self: :class:`SpectrumModel`
 
         Raises
         ------
@@ -584,6 +591,20 @@ class SpectrumModel:
         """
         if priors is None:
             priors = {}
+
+        if from_checkpoint is not None:
+            with open(from_checkpoint, 'rb') as f:
+                best_params = pickle.load(f)
+            for k, v in best_params.items():
+                self.params[k] = v
+
+        if (checkpoint_interval > 0 and checkpoint_path is None) or (checkpoint_path is not None and checkpoint_interval <= 0):
+            warnings.warn("Must specify both checkpoint_path and checkpoint_interval to save checkpoints")
+            checkpoint_interval = -1
+            checkpoint_path = None
+        
+        if checkpoint_path is not None and not os.path.exists(checkpoint_path):
+            os.makedirs(checkpoint_path)
 
         # Clamp values in distribtuions to their limits for backprop
         self.clamp = True
@@ -605,29 +626,26 @@ class SpectrumModel:
 
         self.params.requires_grad_(True)
 
-        model_params = self.params.params()
-        default_kwargs = {"maxiter": 10000, "log_interval": 100, 'best_eps': 1e-5, 'lr': 0.001, 'momentum': 0.9}
-        default_kwargs.update(kwargs)
-
-        optimizer = torch.optim.Adam(model_params, lr = default_kwargs['lr'])#, momentum = default_kwargs['momentum'])
-        # optimizer = torch.optim.SGD(model_params, lr = default_kwargs['lr'], momentum = default_kwargs['momentum'])
+        # Setup up optimizer
+        optimizer = optimizer_cls(self.params.params(), **kwargs)
+        
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
 
         best_params = {k: v.detach() for k, v in self.params.items()}
-        early_stopping = 20
+        
         best_loss = None
         best_step = 0
 
         try:
-            for step in range(default_kwargs['maxiter']):
+            for step in range(maxiter):
                 optimizer.zero_grad()
                 loss = -self.log_likelihood(priors)
-                if best_loss is None or best_loss - loss > default_kwargs['best_eps']:
+                if best_loss is None or best_loss - loss > best_eps:
                     best_loss = loss
                     best_step = step
                     best_params = {k: v.detach() for k, v in self.params.items()}
 
-                if step % default_kwargs["log_interval"] == 0:
+                if step % log_interval == 0:
                     self.log.info(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
                 else:
                     self.log.debug(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
@@ -639,6 +657,7 @@ class SpectrumModel:
                 optimizer.step()
                 scheduler.step(loss)
 
+                # Clamp any values that should be within a certain distribution so they don't drift off.
                 self.params.requires_grad_(False)
                 if priors is not None:
                     for key, prior in priors.items():
@@ -648,9 +667,20 @@ class SpectrumModel:
                             elif isinstance(prior, torch.distributions.HalfNormal):
                                 self[key] = self[key].clamp(min = 0, max = None)
                 self.grid_params = self.grid_params.clamp(self.emulator.min_params, self.emulator.max_params)
+
+                if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > 0:
+                    with open(os.path.join(checkpoint_path, f'model_checkpoint.{step}.pkl'), 'wb') as f:
+                        pickle.dump(best_params, f)
+
                 self.params.requires_grad_(True)
         except Exception as e:
             self.log.error(e)
+            # Set values to last known best values
+            self.params.requires_grad_(False)
+            self.params.update(best_params)
+
+            # Clamp values in distribtuions to their limits for backprop
+            self.clamp = False
             raise e
 
         self.params.requires_grad_(False)

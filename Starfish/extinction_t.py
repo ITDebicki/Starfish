@@ -1,16 +1,17 @@
 import torch
+from typing import Optional, Tuple
 
 # -----------------------------------------------------------------------------
 # Cardelli, Clayton & Mathis (1989)
 
-def ccm89ab_ir_invum(x):
+def ccm89ab_ir_invum(x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     y = x**1.61
     # return a, b
     a = 0.574 * y
     b = -0.527 * y
     return a, b
 
-def ccm89ab_opt_invum(x):
+def ccm89ab_opt_invum(x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     y = x - 1.82
     a = ((((((0.329990*y - 0.77530)*y + 0.01979)*y + 0.72085)*y - 0.02427)*y
              - 0.50447)*y + 0.17699)*y + 1.0
@@ -18,7 +19,7 @@ def ccm89ab_opt_invum(x):
              + 2.28305)*y + 1.41338)*y
     return a, b
 
-def ccm89ab_uv_invum(x):
+def ccm89ab_uv_invum(x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """ccm89 a, b parameters for 3.3 < x < 8.0 (ultraviolet)"""
     y = x - 4.67
     a = 1.752 - 0.316*x - (0.104 / (y*y + 0.341))
@@ -34,7 +35,7 @@ def ccm89ab_uv_invum(x):
     return a, b
 
 
-def ccm89ab_fuv_invum(x):
+def ccm89ab_fuv_invum(x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """ccm89 a, b parameters for 8 < x < 11 (far-UV)"""
 
     y = x - 8.
@@ -45,7 +46,7 @@ def ccm89ab_fuv_invum(x):
     return a, b
 
 
-def ccm89ab_invum(x):
+def ccm89ab_invum(x:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """ccm89 a, b parameters for 0.3 < x < 11 in microns^-1"""
     ir_mask = x < 1.1
     opt_mask = ~ir_mask & (x < 3.3)
@@ -60,7 +61,7 @@ def ccm89ab_invum(x):
 
     return a, b
 
-def ccm89(wave, a_v, r_v, unit='aa', out=None):
+def ccm89(wave:torch.Tensor, a_v:float, r_v:float, unit:str = 'aa', out:Optional[torch.Tensor]=None) -> torch.Tensor:
     """ccm89(wave, a_v, r_v, unit='aa', out=None)
 
     Cardelli, Clayton & Mathis (1989) extinction function.
@@ -70,7 +71,7 @@ def ccm89(wave, a_v, r_v, unit='aa', out=None):
 
     Parameters
     ----------
-    wave : numpy.ndarray (1-d)
+    wave : torch.Tensor (1-d)
         Wavelengths or wavenumbers.
     a_v : float
         Scaling parameter, A_V: extinction in magnitudes at characteristic
@@ -79,7 +80,7 @@ def ccm89(wave, a_v, r_v, unit='aa', out=None):
         Ratio of total to selective extinction, A_V / E(B-V).
     unit : {'aa', 'invum'}, optional
         Unit of wave: 'aa' (Angstroms) or 'invum' (inverse microns).
-    out : np.ndarray, optional
+    out : torch.Tensor, optional
         If specified, store output values in this array.
 
     Returns
@@ -136,7 +137,7 @@ def ccm89(wave, a_v, r_v, unit='aa', out=None):
 # -----------------------------------------------------------------------------
 # O'Donnell (1994)
 
-def od94ab_opt_invum(x):
+def od94ab_opt_invum(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """od94 a, b parameters for 1.1 < x < 3.3 (optical)"""
 
     y = x - 1.82
@@ -146,7 +147,7 @@ def od94ab_opt_invum(x):
               3.989)*y + 2.908)*y + 1.952)*y
     return a, b
 
-def od94ab_invum(x):
+def od94ab_invum(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """ccm89 a, b parameters for 0.3 < x < 11 in microns^-1"""
     ir_mask = x < 1.1
     opt_mask = ~ir_mask & (x < 3.3)
@@ -161,7 +162,7 @@ def od94ab_invum(x):
 
     return a, b
 
-def odonnell94(wave, a_v, r_v, unit='aa', out=None):
+def odonnell94(wave: torch.Tensor, a_v:float, r_v:float, unit:str='aa', out:Optional[torch.Tensor]=None) -> torch.Tensor:
     """odonnell94(wave, a_v, r_v, unit='aa', out=None)
 
     O'Donnell (1994) extinction function.
@@ -171,7 +172,7 @@ def odonnell94(wave, a_v, r_v, unit='aa', out=None):
 
     Parameters
     ----------
-    wave : numpy.ndarray (1-d)
+    wave : torch.DoubleTensor (1-d)
         Wavelengths or wavenumbers.
     a_v : float
         Scaling parameter, A_V: extinction in magnitudes at characteristic
@@ -180,7 +181,7 @@ def odonnell94(wave, a_v, r_v, unit='aa', out=None):
         Ratio of total to selective extinction, A_V / E(B-V).
     unit : {'aa', 'invum'}, optional
         Unit of wave: 'aa' (Angstroms) or 'invum' (inverse microns).
-    out : np.ndarray, optional
+    out : torch.Tensor, optional
         If specified, store output values in this array.
 
     Returns
@@ -218,10 +219,10 @@ def odonnell94(wave, a_v, r_v, unit='aa', out=None):
     n = wave.shape[0]
 
     if out is None:
-        out = torch.empty(n, dtype=torch.float64, device = wave.device)
+        out = torch.empty(n, dtype=wave.dtype, device = wave.device)
     else:
         assert out.shape == wave.shape
-        assert out.dtype == torch.float64
+        assert out.dtype == wave.dtype
 
     if unit == 'aa':
         wave = 1e4 / wave
@@ -238,29 +239,29 @@ def odonnell94(wave, a_v, r_v, unit='aa', out=None):
 # Calzetti 2000
 # http://adsabs.harvard.edu/abs/2000ApJ...533..682C
 
-def calzetti00k_uv_invum(x):
+def calzetti00k_uv_invum(x:torch.Tensor) -> torch.Tensor:
     """calzetti00 `k` for 0.12 microns < wave < 0.63 microns (UV/optical),
     x in microns^-1"""
     return 2.659 * (((0.011*x - 0.198)*x + 1.509)*x - 2.156)
 
 
-def calzetti00k_ir_invum(x):
+def calzetti00k_ir_invum(x:torch.Tensor) -> torch.Tensor:
     """calzetti00 `k` for 0.63 microns < wave < 2.2 microns (optical/IR),
     x in microns^-1"""
     return 2.659 * (1.040*x - 1.857)
 
 
-def calzetti00_invum(x, r_v):
+def calzetti00_invum(x:torch.Tensor, r_v:float) -> torch.Tensor:
     k = None
     mask = x > 1.5873015873015872
-    k = torch.zeros_like(x, device = x.device)
+    k = torch.zeros_like(x)
     k[mask] = calzetti00k_uv_invum(x[mask])
     k[~mask] = calzetti00k_ir_invum(x[~mask])
 
     return 1.0 + k / r_v
 
 
-def calzetti00(wave, a_v, r_v, unit='aa', out=None):
+def calzetti00(wave:torch.Tensor, a_v:float, r_v:float, unit:str='aa', out:Optional[torch.Tensor] = None) -> torch.Tensor:
     """calzetti00(wave, a_v, r_v, unit='aa', out=None)
 
     Calzetti (2000) extinction function.
@@ -273,7 +274,7 @@ def calzetti00(wave, a_v, r_v, unit='aa', out=None):
 
     Parameters
     ----------
-    wave : numpy.ndarray (1-d)
+    wave : torch.Tensor (1-d)
         Wavelengths or wavenumbers.
     a_v : float
         Scaling parameter, A_V: extinction in magnitudes at characteristic
@@ -282,7 +283,7 @@ def calzetti00(wave, a_v, r_v, unit='aa', out=None):
         Ratio of total to selective extinction, A_V / E(B-V).
     unit : {'aa', 'invum'}, optional
         Unit of wave: 'aa' (Angstroms) or 'invum' (inverse microns).
-    out : np.ndarray, optional
+    out : torch.Tensor, optional
         If specified, store output values in this array.
 
     Returns

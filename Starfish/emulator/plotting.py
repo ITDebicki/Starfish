@@ -114,8 +114,8 @@ def plot_emulator(emulator):
 
     T = np.unique(emulator.grid_points[:, 0])
     logg = np.unique(emulator.grid_points[:, 1])
-    Z = np.unique(emulator.grid_points[:, 2])
-    params = np.array(list(itertools.product(T, logg[:1], Z[:1])))
+    Z = np.array([0])#np.unique(emulator.grid_points[:, 2])
+    params = np.array(list(itertools.product(T, logg[:1])))
     idxs = np.array([emulator.get_index(p) for p in params])
     weights = emulator.weights[idxs.astype("int")].T
     if emulator.ncomps < 4:
@@ -135,7 +135,7 @@ def plot_emulator(emulator):
         axes[i].plot(T, w, "o")
 
     Ttest = np.linspace(T.min(), T.max(), 100)
-    Xtest = np.array(list(itertools.product(Ttest, logg[:1], Z[:1])))
+    Xtest = np.array(list(itertools.product(Ttest, logg[:1])))
     mus = []
     covs = []
     for X in Xtest:

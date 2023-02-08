@@ -2,7 +2,7 @@ import h5py
 import numpy as np
 from dataclasses import dataclass
 from nptyping import NDArray
-from typing import Optional
+from typing import Optional, Union
 import torch
 import pandas as pd
 
@@ -14,14 +14,16 @@ class Order:
 
     Parameters
     ----------
-    _wave : numpy.ndarray
+    _wave : torch.DoubleTensor
         The full wavelength array
-    _flux : numpy.ndarray
+    _flux : torch.DoubleTensor
         The full flux array
-    _sigma : numpy.ndarray, optional
+    _sigma : torch.DoubleTensor, optional
         The full sigma array. If None, will default to all 0s. Default is None
-    mask : numpy.ndarray, optional
+    mask : torch.DoubleTensor, optional
         The full mask. If None, will default to all Trues. Default is None
+    device: Union[str, torch.torch.DeviceObjType], optional
+        The device on which the Order is stored. If None, will default to 'cpu'.
 
     Attributes
     ----------
@@ -32,7 +34,7 @@ class Order:
     _flux: torch.DoubleTensor
     _sigma: Optional[torch.DoubleTensor] = None
     mask: Optional[torch.DoubleTensor] = None
-    device: str = 'cpu'
+    device: Union[str, torch.DeviceObjType] = 'cpu'
 
     def __post_init__(self):
         if self._sigma is None:
@@ -40,7 +42,7 @@ class Order:
         if self.mask is None:
             self.mask = torch.ones_like(self._wave, dtype=bool)
 
-    def to(self, device):
+    def to(self, device: Union[str, torch.torch.DeviceObjType]):
         self.device = device
         self._wave = self._wave.to(device)
         self._sigma = self._sigma.to(device)
@@ -50,21 +52,21 @@ class Order:
     @property
     def wave(self):
         """
-        numpy.ndarray : The masked wavelength array
+        torch.DoubleTensor : The masked wavelength array
         """
         return self._wave[self.mask]
 
     @property
     def flux(self):
         """
-        numpy.ndarray : The masked flux array
+        torch.DoubleTensor : The masked flux array
         """
         return self._flux[self.mask]
 
     @property
     def sigma(self):
         """
-        numpy.ndarray : The masked flux uncertainty array
+        torch.DoubleTensor : The masked flux uncertainty array
         """
         return self._sigma[self.mask]
 
@@ -163,30 +165,30 @@ class Spectrum:
 
     # Masked properties
     @property
-    def waves(self) -> np.ndarray:
+    def waves(self) -> torch.DoubleTensor:
         """
-        numpy.ndarray : The 2 dimensional masked wavelength arrays
+        torch.DoubleTensor : The 2 dimensional masked wavelength arrays
         """
         return self._waves[self.masks]
 
     @property
-    def fluxes(self) -> np.ndarray:
+    def fluxes(self) -> torch.DoubleTensor:
         """
-        numpy.ndarray : The 2 dimensional masked flux arrays
+        torch.DoubleTensor : The 2 dimensional masked flux arrays
         """
         return self._fluxes[self.masks]
 
     @property
-    def sigmas(self) -> np.ndarray:
+    def sigmas(self) -> torch.DoubleTensor:
         """
-        numpy.ndarray : The 2 dimensional masked flux uncertainty arrays
+        torch.DoubleTensor : The 2 dimensional masked flux uncertainty arrays
         """
         return self._sigmas[self.masks]
 
     @property
     def shape(self):
         """
-        numpy.ndarray: The shape of the spectrum, *(norders, npixels)*
+        torch.DoubleTensor: The shape of the spectrum, *(norders, npixels)*
 
         :setter: Tries to reshape the data into a new arrangement of orders and pixels following numpy reshaping rules.
         """
@@ -216,14 +218,14 @@ class Spectrum:
         self.masks = self.masks.reshape(shape)
 
     @classmethod
-    def load(cls, filename: str, file_type: Optional[str] = None, convert = None, name = None, spectrum_filter = None, **kwargs):
+    def load(cls, filename: str, file_type: Optional[str] = None, convert = None, name = None, spectrum_filter = None, device = 'cpu', **kwargs):
         """
         Load a spectrum from a file
 
         Parameters
         ----------
         filename : str or path-like
-            The path to the HDF5, tt or csv file.
+            The path to the HDF5, tsv or csv file.
         fil
 
         See Also
@@ -285,22 +287,26 @@ class Spectrum:
                             sigmas = convert[1](sigmas)
 
 
-        return cls(waves, fluxes, sigmas, masks, name=name)
+        return cls(torch.tensor(waves, dtype = torch.float64),
+                    torch.tensor(fluxes, dtype = torch.float64),
+                    torch.tensor(sigmas, dtype = torch.float64),
+                    torch.tensor(masks, dtype = torch.bool),
+                    name=name, device = device)
 
     @staticmethod
     def load_pd(filename, file_type, name, spectrum_filter = None, **kwargs):
         df = pd.read_csv(filename, delimiter='\t' if file_type == 'tsv' else ',', **kwargs)
         df = df.sort_values('waves')
         df = spectrum_filter(df) if spectrum_filter else df
-        waves = torch.DoubleTensor(df["waves"].values) if "waves" in df else None
-        fluxes = torch.DoubleTensor(df["fluxes"].values) if "fluxes" in df else None
-        sigmas = torch.DoubleTensor(df["sigmas"].values) if "sigmas" in df else None
-        masks = torch.BoolTensor(df["masks"].values) if "masks" in df else None
+        waves = df["waves"].values if "waves" in df else None
+        fluxes = df["fluxes"].values if "fluxes" in df else None
+        sigmas = df["sigmas"].values if "sigmas" in df else None
+        masks = df["masks"].values if "masks" in df else None
 
         if masks is None and fluxes is not None:
-            masks = ~torch.isnan(fluxes)
+            masks = ~np.isnan(fluxes)
             if sigmas is not None:
-                masks = masks & ~torch.isnan(sigmas)
+                masks = masks & ~np.isnan(sigmas)
 
         return waves, fluxes, sigmas, masks, name
 
@@ -310,10 +316,10 @@ class Spectrum:
         with h5py.File(filename, "r") as base:
             if name is None and "name" in base.attrs:
                 name = base.attrs["name"]
-            waves = torch.DoubleTensor(base["waves"][:])
-            fluxes = torch.DoubleTensor(base["fluxes"][:])
-            sigmas = torch.DoubleTensor(base["sigmas"][:])
-            masks = torch.BoolTensor(base["masks"][:])
+            waves = base["waves"][:]
+            fluxes = base["fluxes"][:]
+            sigmas = base["sigmas"][:]
+            masks = base["masks"][:]
         
         return waves, fluxes, sigmas, masks, name
 

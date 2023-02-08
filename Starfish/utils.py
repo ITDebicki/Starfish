@@ -9,24 +9,24 @@ import Starfish.constants as C
 import logging 
 log = logging.getLogger(__name__)
 
-def calculate_dv(wave: Sequence):
+def calculate_dv(wave: torch.Tensor) -> torch.Tensor:
     """
     Given a wavelength array, calculate the minimum ``dv`` of the array.
 
     Parameters
     ----------
-    wave : array-like
+    wave : torch.Tensor
         The wavelength array
 
     Returns
     -------
-    float
+    torch.Tensor
         delta-v in units of km/s
     """
     return C.c_kms * torch.min(torch.diff(wave) / wave[..., :-1])
 
 
-def calculate_dv_dict(wave_dict):
+def calculate_dv_dict(wave_dict:dict) -> float:
     """
     Given a ``wave_dict``, calculate the velocity spacing.
 
@@ -45,7 +45,7 @@ def calculate_dv_dict(wave_dict):
     return dv
 
 
-def create_log_lam_grid(dv, start, end):
+def create_log_lam_grid(dv:float, start:float, end:float) -> dict:
     """
     Create a log lambda spaced grid with ``N_points`` equal to a power of 2 for
     ease of FFT.

@@ -6,14 +6,14 @@ from Starfish import constants as C
 
 
 def global_covariance_matrix(
-    wave: np.ndarray, amplitude: float, lengthscale: float
-) -> np.ndarray:
+    wave: torch.Tensor, amplitude: float, lengthscale: float
+) -> torch.Tensor:
     """
     A matern-3/2 kernel where the metric is defined as the velocity separation of the wavelengths.
 
     Parameters
     ----------
-    wave : numpy.ndarray
+    wave : torch.Tensor
         The wavelength grid
     amplitude : float
         The amplitude of the kernel
@@ -22,7 +22,7 @@ def global_covariance_matrix(
 
     Returns
     -------
-    cov : numpy.ndarray
+    cov : torch.Tensor
         The global covariance matrix
     """
     wx, wy = torch.meshgrid(wave, wave, indexing='xy')
@@ -43,8 +43,8 @@ def global_covariance_matrix(
 
 
 def local_covariance_matrix(
-    wave: np.ndarray, amplitude: float, mu: float, sigma: float
-) -> np.ndarray:
+    wave: torch.Tensor, amplitude: float, mu: float, sigma: float
+) -> torch.Tensor:
     """
     A local Gaussian kernel. In general, the kernel has density like
 
@@ -53,7 +53,7 @@ def local_covariance_matrix(
 
     Parameters
     ----------
-    wave : numpy.ndarray
+    wave : torch.Tensor
         The wavelength grid
     amplitude : float
         The amplitudes of the Gaussian
@@ -64,7 +64,7 @@ def local_covariance_matrix(
 
     Returns
     -------
-    cov : numpy.ndarray
+    cov : torch.Tensor
         The sum of each Gaussian kernel, or the local covariance kernel
     """
     # Set up the metric and mesh grid

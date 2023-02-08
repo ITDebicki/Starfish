@@ -16,6 +16,7 @@ from Starfish.param_dict import GroupedParamDict
 from .kernels import batch_kernel
 from ._utils import get_phi_squared, get_w_hat, reshape_fortran
 import torch
+import pickle
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class Emulator:
         self.device = device
 
     @property
-    def lambda_xi(self) -> float:
+    def lambda_xi(self) -> torch.Tensor:
         """
         float : The tuning hyperparameter
 
@@ -145,19 +146,19 @@ class Emulator:
 
     @lambda_xi.setter
     def lambda_xi(self, value: float):
-        self.hyperparams["log_lambda_xi"] = np.log(value)
+        self.hyperparams["log_lambda_xi"] = np.log(value) if isinstance(value, float) else torch.log(value)
 
     @property
-    def variances(self) -> NDArray[float]:
+    def variances(self) -> torch.Tensor:
         """
-        numpy.ndarray : The variances for each Gaussian process kernel.
+        torch.Tensor : The variances for each Gaussian process kernel.
 
-        :setter: Sets the variances given an array.
+        :setter: GEts the variances given an array.
         """
         return torch.exp(self.hyperparams['log_variance'].values()[0])
 
     @variances.setter
-    def variances(self, values: NDArray[float]):
+    def variances(self, values:Union[torch.Tensor, NDArray[float]]):
         if isinstance(values, torch.Tensor):
             for i, value in enumerate(values):
                 self.hyperparams[f"log_variance:{i}"] = torch.log(value)
@@ -166,16 +167,16 @@ class Emulator:
                 self.hyperparams[f"log_variance:{i}"] = np.log(value)
 
     @property
-    def lengthscales(self) -> NDArray[float]:
+    def lengthscales(self) -> torch.Tensor:
         """
-        numpy.ndarray : The lengthscales for each Gaussian process kernel.
+        torch.Tensor : The lengthscales for each Gaussian process kernel.
 
-        :setter: Sets the lengthscales given a 2d array
+        :setter: Gets the lengthscales given a 2d array
         """
         return torch.exp(self.hyperparams['log_lengthscale'].values()[0]).reshape(self.ncomps, -1)
 
     @lengthscales.setter
-    def lengthscales(self, values: NDArray[float]):
+    def lengthscales(self, values: Union[torch.Tensor, NDArray[float]]):
         if isinstance(values, torch.Tensor):
             for i, value in enumerate(values):
                 for j, ls in enumerate(value):
@@ -208,7 +209,7 @@ class Emulator:
             flux_std = base["flux_std"][:]
             w_hat = base["w_hat"][:]
             factors = base["factors"][:]
-            lambda_xi = base["hyperparameters"]["lambda_xi"][()]
+            lambda_xi = base["hyperparameters"]["lambda_xi"][0]
             variances = base["hyperparameters"]["variances"][:]
             lengthscales = base["hyperparameters"]["lengthscales"][:]
             trained = base.attrs["trained"]
@@ -334,16 +335,16 @@ class Emulator:
 
     def __call__(
         self,
-        params: Sequence[float],
+        params: torch.Tensor,
         full_cov: bool = True,
         reinterpret_batch: bool = False,
-    ) -> Tuple[NDArray[float], NDArray[float]]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Gets the mu and cov matrix for a given set of params
 
         Parameters
         ----------
-        params : array_like
+        params : torch.Tensor
             The parameters to sample at. Should be consistent with the shapes of the
             original grid points.
         full_cov : bool, optional
@@ -355,8 +356,8 @@ class Emulator:
 
         Returns
         -------
-        mu : numpy.ndarray (len(params),)
-        cov : numpy.ndarray (len(params), len(params))
+        mu : torch.Tensor (len(params),)
+        cov : torch.Tensor (len(params), len(params))
 
         Raises
         ------
@@ -489,15 +490,30 @@ class Emulator:
         self.wl = trunc_wavelength
         self.eigenspectra = self.eigenspectra[:, ind]
 
-    def train(self, **opt_kwargs):
+    def train(self, optimizer_cls: torch.optim.Optimizer = torch.optim.Adam, maxiter:int = 10000, log_interval:int = 100, best_eps:float = 1e-3, early_stopping:int = 20, checkpoint_path: Optional[str] = None, checkpoint_interval: int = -1, from_checkpoint: Optional[str] = None, **opt_kwargs):
         """
-        Trains the emulator's hyperparameters using gradient descent. This is a light wrapper around `scipy.optimize.minimize`. If you are experiencing problems optimizing the emulator, consider implementing your own training loop, using this function as a template.
+        Trains the emulator's hyperparameters using gradient descent.
 
         Parameters
         ----------
+        optimizer_cls: torch.optim.Optimizer, optional
+            The optimizer to use. Defaults to Adam
+        maxiter: int, optional
+            The maximum number of steps the optimizer will take. Defaults to 10000
+        log_interval: int, optional
+            After how many steps should an info log with current loss be printed to the log. Defaults to 100
+        best_eps: float, optional
+            How small of a difference in log likelihood should be considered equal for early stopping purposes. Defaults to 1e-3
+        early_stopping: int, optional
+            After how many steps of no improvement should the optimization be stopped. Defaults to 20
+        checkpoint_path: Optional[str]
+            Where to store the checkpoints during training. Defaults to None (No checkpoints stored)
+        checkpoint_interval: int
+            How often to store checkpoints during training. Defaults to -1 (No checkpoints stored)
+        from_checkpoint: Optional[str]
+            Which hceckpoint file to load to resume training. Defaults to None (Don't resume)
         **opt_kwargs
-            Any arguments to pass to the optimizer. By default, `method='Nelder-Mead'`
-            and `maxiter=10000`.
+            Any arguments to pass to the optimizer.
 
         See Also
         --------
@@ -505,28 +521,38 @@ class Emulator:
 
         """
 
+        if from_checkpoint is not None:
+            with open(from_checkpoint, 'rb') as f:
+                best_params = pickle.load(f)
+            for k, v in best_params.items():
+                self.hyperparams[k] = v
+            
+
+
         # Do the optimization
         # Enable autograd for parameters
         self.hyperparams.requires_grad_(True)
         # Keep track of parameters
-        params = self.hyperparams.params()
 
         variance_params = self.hyperparams['log_variance'].values()[0]
         lengthscale_params = self.hyperparams['log_lengthscale'].values()[0]
+
+        if (checkpoint_interval > 0 and checkpoint_path is None) or (checkpoint_path is not None and checkpoint_interval <= 0):
+            warnings.warn("Must specify both checkpoint_path and checkpoint_interval to save checkpoints")
+            checkpoint_interval = -1
+            checkpoint_path = None
         
+        if checkpoint_path is not None and not os.path.exists(checkpoint_path):
+            os.makedirs(checkpoint_path)
 
-        default_kwargs = {"maxiter": 10000, "log_interval": 100, 'best_eps': 1e-5, 'lr': 0.001, 'momentum': 0.9, 'early_stopping': 20}
-        default_kwargs.update(opt_kwargs)
-
-        optimizer = torch.optim.SGD(params, lr = default_kwargs['lr'], momentum = default_kwargs['momentum'])
+        optimizer = optimizer_cls(self.hyperparams.params(), **opt_kwargs)
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
 
         best_params = {k: v.detach() for k, v in self.hyperparams.items()}
-        early_stopping = default_kwargs['early_stopping']
         best_loss = None
         best_step = 0
         try:
-            for step in range(default_kwargs['maxiter']):
+            for step in range(maxiter):
             
                 optimizer.zero_grad()
 
@@ -538,15 +564,19 @@ class Emulator:
                 )
                 loss = -self.log_likelihood()
                 
-                if best_loss is None or best_loss - loss > default_kwargs['best_eps'] :
+                if best_loss is None or best_loss - loss > best_eps :
                     best_loss = loss
                     best_step = step
                     best_params = {k: v.detach() for k, v in self.hyperparams.items()}
 
-                if step % default_kwargs["log_interval"] == 0:
+                if step % log_interval == 0:
                     self.log.info(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
                 else:
                     self.log.debug(f"step: {step} loss: {loss.item()} (best loss: {best_loss if best_loss is None else best_loss.item()} @ step: {best_step})")
+
+                if checkpoint_interval > 0 and step % checkpoint_interval == 0 and step > 0:
+                    with open(os.path.join(checkpoint_path, f'emulator_checkpoint.{step}.pkl'), 'wb') as f:
+                        pickle.dump(best_params, f)
 
                 if step - best_step > early_stopping:
                     self.log.info(f"Early stopping as step: {step} loss: {loss} (best loss: {best_loss} @ step: {best_step})")
@@ -660,7 +690,8 @@ class Emulator:
         output += f"\nLog Likelihood: {self.log_likelihood().item():.2f}\n"
         return output
 
-    def to(self, device):
+    def to(self, device: Union[str, torch.DeviceObjType]):
+        """Moves all computation for the emulator to given device."""
         self.device = device
         self.hyperparams.to(device)
 
@@ -677,7 +708,6 @@ class Emulator:
         self.min_params = self.min_params.to(device)
         self.max_params = self.max_params.to(device)
 
-        # TODO find better variable names for the following
         self.iPhiPhi = self.iPhiPhi.to(device)
         self.v11 = self.v11.to(device)
         self.w_hat = self.w_hat.to(device)

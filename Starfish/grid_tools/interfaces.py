@@ -1,6 +1,10 @@
 import bz2
 import logging
 import os
+import glob
+import re
+from Starfish.conversions import microns_to_angstrom, erg_cm2_s_hz_to_erg_s_cm2_cm
+from typing import Union, Tuple
 
 import numpy as np
 from astropy.io import fits, ascii
@@ -552,3 +556,132 @@ def load_BTSettl(T, logg, Z, norm=False, trunc=False, air=False):
         wl = vacuum_to_air(wl)
 
     return [wl, fl]
+
+
+class SonoraGridInterface(GridInterface):
+    """
+    An Interface to the SONORA library.
+
+    Note that the wavelengths in the spectra are in Angstrom and the flux are in :math:`F_\\lambda` as
+    :math:`erg/s/cm^2/cm`
+
+    Parameters
+    ----------
+    path : str or path-like
+        The path of the base of the Sonora library
+    air : bool, optional
+        Whether the wavelengths are measured in air or not. Default is False
+    wl_range : tuple, optional
+        The (min, max) of the wavelengths, in :math:`\\AA`. Default is (4000, 500000), which is the full wavelength grid for Sonora.
+    """
+
+    def __init__(self, path, air=False, wl_range=(4000, 500000)):
+        super().__init__(
+            name="Sonora",
+            param_names=["T", "logg"],#, 'Z'],
+            points=[
+                np.concatenate([np.arange(200, 600, 25), np.arange(600, 1000, 50), np.arange(1000, 2401, 100)], axis = None),
+                np.arange(3.0, 5.51, 0.25),
+                # np.array([-0.5, 0, 0.5]),
+            ],
+            wave_units="AA",
+            flux_units="erg/s/cm^2/cm",
+            air=air,
+            wl_range=wl_range,
+            path=path,
+        )
+
+
+        # Need to load in wavelengths
+        # Just read in first file
+        wavelengths, _ = read_sonora_flux_file(glob.glob(os.path.join(path, "*0.0"))[0])
+        # Convert from microns to Angstroms
+        w_full = microns_to_angstrom(wavelengths)
+
+
+        # if air is true, convert the normally vacuum file to air wls.
+        if self.air:
+            self.wl_full = vacuum_to_air(w_full)
+        else:
+            self.wl_full = w_full
+
+        self.ind = (self.wl_full >= self.wl_range[0]) & (
+            self.wl_full <= self.wl_range[1]
+        )
+        self.wl = self.wl_full[self.ind]
+        self.rname = "sp_t{0}g{1}nc_m0.0"
+        self.full_rname = os.path.join(self.path, self.rname)
+
+    def load_flux(self, parameters, header=False, norm=True):
+        
+        self.check_params(parameters)  # Check to make sure that the keys are
+        # allowed and that the values are in the grid
+
+        # Create a list of the parameters to be fed to the format string
+        # optionally replacing arguments using the dictionaries, if the formatting
+        # of a certain parameter is tricky
+        params = [
+            str(int(parameters[0])),
+            # convert logg to MKS g
+            int(round(10**(parameters[1] - 2), 0 if parameters[1] < 5 else -1)),
+            # Format MH
+            # f"+{parameters[2]:.1f}" if parameters[2] > 0 else f"{parameters[2]:.1f}"
+        ]
+
+        # Account for rounding errors in names
+        if params[1] in {18, 32}:
+            params[1] -= 1
+        params[1] = str(params[1])
+
+        fname = self.full_rname.format(*params)
+
+        # Still need to check that file is in the grid, otherwise raise a C.GridError
+        # Read all metadata in from the FITS header, and append to spectrum
+        if not os.path.exists(fname):
+            raise ValueError("{} is not on disk.".format(fname))
+
+        # Ignore wl, already have a copy in self.wl
+        wl, flux = read_sonora_flux_file(fname)
+        #Convert flux from erg/cm^2/s/Hz to erg/cm^2/s/cm
+        
+        flux = erg_cm2_s_hz_to_erg_s_cm2_cm(flux, wl)
+
+        # If we want to normalize the spectra, we must do it now since later we won't have the full EM range
+        if norm:
+            flux *= 1e-8  # convert from erg/cm^2/s/cm to erg/cm^2/s/A
+            F_bol = np.trapz(flux, self.wl_full)
+            # bolometric luminosity is always 1 L_sun
+            flux *= C.F_sun / F_bol
+
+        hdr = {}
+        # Add temp, logg, Z, alpha, norm to the metadata
+        hdr["norm"] = norm
+        hdr["air"] = self.air
+
+        if header:
+            return (flux[self.ind], hdr)
+        else:
+            return flux[self.ind]
+
+def read_sonora_flux_file(filename:str) -> Tuple[np.ndarray, np.ndarray]:
+    """Reads a Sonora / Sonora Bobcat spectrum file, and returns the wavelengths (microns) and flux values (erg/cm^2/s/Hz), sorted from low to high.
+
+    Args:
+        filename (str or path-like): The filename of the sonora spectrum file.
+
+    Returns:
+        Tuple[np.ndarray, np.ndarray]: Returns tuple of (wavelength (microns), flux values (erg/cm^2/s/Hz))
+    """
+    wavelengths = []
+    fluxes = []
+    with open(filename, 'r') as f:
+        for i, line in enumerate(f):
+            if i >= 2: # Skip over header lines
+                line = line.strip()
+                if len(line) > 0:
+                    lineParts = re.split(' +', line)
+                    # Convert wav
+                    wavelengths.append(float(lineParts[0]))
+                    fluxes.append(float(lineParts[1]))
+    wavelengths, fluxes = zip(*sorted(zip(wavelengths, fluxes), key = lambda x: x[0]))
+    return np.array(wavelengths), np.array(fluxes)

@@ -1,5 +1,5 @@
 import extinction  # This may be marked as unused, but is necessary
-
+from typing import Union
 from Starfish.constants import c_kms
 from Starfish.utils import calculate_dv
 from . import extinction_t
@@ -7,7 +7,7 @@ import torch
 
 
 
-def h_poly(t):
+def h_poly(t:torch.Tensor) -> torch.Tensor:
     # Just store the inverse matrix (output of:)
     # torch.inverse(torch.tensor(
     #     [[1, 0, 0, 0],
@@ -26,17 +26,17 @@ def h_poly(t):
     # Multiply by inverse to find result
     return A @ tt
 
-def resample(x, y, xs):
+def resample(x:torch.Tensor, y:torch.Tensor, xs:torch.Tensor) -> torch.Tensor:
     """
     Resample onto a new wavelength grid using k=5 spline interpolation
 
     Parameters
     ----------
-    x : array_like
+    x : torch.Tensor
         The original wavelength grid
-    y : array_like
+    y : torch.Tensor
         The fluxes to resample
-    xs : array_like
+    xs : torch.Tensor
         The new wavelength grid
 
     Raises
@@ -46,7 +46,7 @@ def resample(x, y, xs):
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         The resampled flux with the same 1st dimension as the input flux
     """
     # # Check for strictly increasing monotonic
@@ -84,7 +84,7 @@ def resample(x, y, xs):
     else:
         return out
 
-def instrumental_broaden(wave, flux, fwhm):
+def instrumental_broaden(wave:torch.Tensor, flux:torch.Tensor, fwhm:float) -> torch.Tensor:
     """
     Broadens given flux by convolving with a Gaussian kernel appropriate for a
     spectrograph's instrumental properties. Follows the given equation
@@ -100,9 +100,9 @@ def instrumental_broaden(wave, flux, fwhm):
 
     Parameters
     ----------
-    wave : array_like
+    wave : torch.Tensor
         The current wavelength grid
-    flux : array_like
+    flux : torch.Tensor
         The current flux
     fwhm : float
         The full width half-maximum of the instrument in km/s. Note that this is
@@ -115,7 +115,7 @@ def instrumental_broaden(wave, flux, fwhm):
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         The broadened flux with the same shape as the input flux
     """
 
@@ -132,15 +132,15 @@ def instrumental_broaden(wave, flux, fwhm):
     return flux_final
 
 
-def rotational_broaden(wave, flux, vsini):
+def rotational_broaden(wave:torch.Tensor, flux:torch.Tensor, vsini:float) -> torch.Tensor:
     """
     Broadens flux according to a rotational broadening kernel from Gray (2005) [1]_
 
     Parameters
     ----------
-    wave : array_like
+    wave : torch.Tensor
         The current wavelength grid
-    flux : array_like
+    flux : torch.Tensor
         The current flux
     vsini : float
         The rotational velocity in km/s
@@ -152,7 +152,7 @@ def rotational_broaden(wave, flux, vsini):
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         The broadened flux with the same shape as the input flux
 
 
@@ -185,7 +185,7 @@ def rotational_broaden(wave, flux, vsini):
     return flux_final
 
 
-def doppler_shift(wave, vz):
+def doppler_shift(wave:torch.Tensor, vz:float) -> torch.Tensor:
     """
     Doppler shift a spectrum according to the formula
 
@@ -201,7 +201,7 @@ def doppler_shift(wave, vz):
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         Altered wavelengths with the same shape as the input wavelengths
     """
 
@@ -209,7 +209,7 @@ def doppler_shift(wave, vz):
     return wave * dv
 
 
-def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
+def extinct(wave:torch.Tensor, flux:torch.Tensor, Av:float, Rv:float=3.1, law:str="ccm89") -> torch.Tensor:
     """
     Extinct a spectrum following one of many empirical extinction laws. This makes use
     of the `extinction` package. In general, it follows the form
@@ -218,9 +218,9 @@ def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
 
     Parameters
     ----------
-    wave : array_like
+    wave : torch.Tensor
         The input wavelengths in Angstrom
-    flux : array_like
+    flux : torch.Tensor
         The input fluxes
     Av : float
         The absolute attenuation
@@ -239,7 +239,7 @@ def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         The extincted fluxes, with same shape as input fluxes.
     """
     laws = {
@@ -266,7 +266,7 @@ def extinct(wave, flux, Av, Rv=3.1, law="ccm89"):
     return flux_final
 
 
-def rescale(flux, scale):
+def rescale(flux:torch.Tensor, scale:Union[float, torch.Tensor]) -> torch.Tensor:
     """
     Rescale the given flux via the following equation
 
@@ -286,14 +286,14 @@ def rescale(flux, scale):
         The rescaled fluxes with the same shape as the input fluxes
     """
     if isinstance(scale, (int, float)):
-        scale = torch.DoubleTensor([scale], device = flux.device)
+        scale = torch.tensor([scale], device = flux.device, dtype = flux.dtype)
     scale = torch.atleast_1d(scale)
     if len(scale) > 1:
         scale = scale.unsqueeze(1)
     return flux * scale
 
 
-def renorm(wave, flux, reference_flux):
+def renorm(wave:torch.Tensor, flux:torch.Tensor, reference_flux:torch.Tensor) -> torch.Tensor:
     """
     Renormalize one spectrum to another
 
@@ -308,45 +308,45 @@ def renorm(wave, flux, reference_flux):
 
     Parameters
     ----------
-    wave : array_like
+    wave : torch.Tensor
         The wavelength grid for the source flux
-    flux : array_like
+    flux : torch.Tensor
         The flux for the source
-    reference_flux : array_like
+    reference_flux : torch.Tensor
         The reference source to renormalize to
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         The renormalized flux
     """
     factor = _get_renorm_factor(wave, flux, reference_flux)
     return rescale(flux, factor)
 
 
-def _get_renorm_factor(wave, flux, reference_flux):
+def _get_renorm_factor(wave:torch.Tensor, flux:torch.Tensor, reference_flux:torch.Tensor) -> torch.Tensor:
     ref_int = torch.trapz(reference_flux, wave)
     flux_int = torch.trapz(flux, wave, axis=-1)
     return ref_int / flux_int
 
 
-def chebyshev_correct(wave, flux, coeffs):
+def chebyshev_correct(wave:torch.Tensor, flux:torch.Tensor, coeffs:torch.Tensor) -> torch.Tensor:
     """
     Multiply the input flux by a Chebyshev series in order to correct for
     calibration-level discrepancies.
 
     Parameters
     ----------
-    wave : array-lioke
+    wave : torch.Tensor
         Input wavelengths
-    flux : array-like
+    flux : torch.Tensor
         Input flux
-    coeffs : array-like
+    coeffs : torch.Tensor
         The coefficients for the chebyshev series.
 
     Returns
     -------
-    numpy.ndarray
+    torch.Tensor
         The corrected flux
 
     Raises
@@ -355,7 +355,7 @@ def chebyshev_correct(wave, flux, coeffs):
         If only processing a single spectrum and the linear coefficient is not 1.
     """
     # have to scale wave to fit on domain [0, 1]
-    coeffs = torch.tensor(coeffs, dtype = torch.float64)
+    coeffs = torch.tensor(coeffs, dtype = wave.dtype, device = wave.device)
     if coeffs.ndim == 1 and coeffs[0] != 1:
         raise ValueError(
             "For single spectrum the linear Chebyshev coefficient (c[0]) must be 1"

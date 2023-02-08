@@ -1,6 +1,7 @@
 import torch
+from typing import Union
 
-def rbf_kernel(X, Z, variance, lengthscale):
+def rbf_kernel(X: torch.Tensor, Z: torch.Tensor, variance: float, lengthscale: Union[torch.Tensor, float]) -> torch.Tensor:
     """
     A classic radial-basis function (Gaussian; exponential squared) covariance kernel
 
@@ -9,32 +10,32 @@ def rbf_kernel(X, Z, variance, lengthscale):
 
     Parameters
     ----------
-    X : np.ndarray
+    X : torch.Tensor
         The first set of points
-    Z : np.ndarray
+    Z : torch.Tensor
         The second set of points. Must have same second dimension as `X`
     variance : double
         The amplitude for the RBF kernel
-    lengthscale : np.ndarray or double
+    lengthscale : torch.Tensor or double
         The lengthscale for the RBF kernel. Must have same second dimension as `X`
 
     """
     sq_dist = torch.cdist(X / lengthscale, Z / lengthscale).pow(2)
     return variance * torch.exp(-0.5 * sq_dist)
 
-def batch_kernel(X, Z, variances, lengthscales):
+def batch_kernel(X:torch.Tensor, Z:torch.Tensor, variances:torch.Tensor, lengthscales:torch.Tensor) -> torch.Tensor:
     """
     Batched RBF kernel
 
     Parameters
     ----------
-    X : np.ndarray
+    X : torch.Tensor
         The first set of points
-    Z : np.ndarray
+    Z : torch.Tensor
         The second set of points. Must have same second dimension as `X`
-    variances : np.ndarray
+    variances : torch.Tensor
         The amplitude for the RBF kernel
-    lengthscales : np.ndarray
+    lengthscales : torch.Tensor
         The lengthscale for the RBF kernel. Must have same second dimension as `X`
 
     See Also
